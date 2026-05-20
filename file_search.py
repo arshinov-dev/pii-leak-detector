@@ -3,6 +3,7 @@ import json
 import csv
 import io
 import re
+from typing import Iterator
 from pathlib import Path
 from collections import Counter
 from typing import Dict, Any
@@ -96,9 +97,12 @@ def detect_file_type(filepath: str) -> Dict[str, Any]:
     info["process_result"] = process_file_before_return(filepath, info)
     return info
 
-# Сканер папки и вывод статистики
-def scan_data_folder(folder_name: str ):
-    # Определяем путь рядом с запускаемым файлом (работает и для .py, и для .exe)
+# Сканер папки
+def traverse_data_folder(folder_name: str) -> Iterator[Path]:
+    """
+    Рекурсивно проходит по папке и возвращает генератор путей ко всем файлам.
+    Также проверяет существование папки и выводит стартовые сообщения.
+    """
     if getattr(sys, 'frozen', False):
         base_dir = Path(sys.executable).parent
     else:
@@ -110,20 +114,28 @@ def scan_data_folder(folder_name: str ):
         print(f"Папка '{target_dir}' не найдена. Положите её рядом со скриптом")
         sys.exit(1)
 
+    print(f"Сканирую: {target_dir}")
+    print("Пожалуйста, подождите...\n")
+
+    # Генератор отдаёт файлы по одному
+    for file_path in target_dir.rglob('*'):
+        if file_path.is_file():
+            yield file_path
+
+
+def count_and_report_files(file_paths: Iterator[Path]) -> None:
+    """
+    Принимает итератор путей, определяет типы файлов, собирает статистику 
+    и выводит итоговый отчёт в консоль.
+    """
     total_files = 0
     error_count = 0
     type_counter = Counter()
     errors_log = []
 
-    print(f"Сканирую: {target_dir}")
-    print("Пожалуйста, подождите...\n")
-
-    # Рекурсивный обход всех файлов
-    for file_path in target_dir.rglob('*'):
-        if not file_path.is_file():
-            continue
-
+    for file_path in file_paths:
         total_files += 1
+        # detect_file_type должна быть определена в вашем коде
         result = detect_file_type(str(file_path))
 
         if result["status"] == "error":
