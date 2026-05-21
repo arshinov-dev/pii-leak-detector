@@ -13,6 +13,18 @@ python main.py <путь_к_папке>
 python main.py <путь_к_папке> --plan
 ```
 
+Выполнить базовое извлечение текста без OCR:
+
+```bash
+python main.py <путь_к_папке> --extract
+```
+
+Smoke-прогон на первых N файлах:
+
+```bash
+python main.py <путь_к_папке> --extract --extract-limit 50
+```
+
 ## Назначение файлов
 
 ### file_search.py
@@ -36,3 +48,31 @@ python main.py <путь_к_папке> --plan
 * пропуск нерелевантных файлов вроде executable.
 
 > Детальное описание: [extraction_planner](guides/extraction_planner.md)
+
+### text_blocks.py
+
+Единый формат текстового блока для следующих этапов пайплайна:
+* путь к файлу;
+* источник текста;
+* номер блока;
+* страница, лист или диапазон строк;
+* метод извлечения;
+* текст, предупреждения и технические метаданные.
+
+### text_extractors.py
+
+Набор дешевых извлекателей текста без OCR:
+* TXT/Markdown;
+* HTML;
+* CSV/TSV;
+* JSON;
+* PDF с цифровым текстовым слоем;
+* DOCX;
+* RTF;
+* XLSX.
+
+### extraction_runner.py
+
+Исполняет primary-шаги из `ExtractionPlan` и собирает `TextBlock`-и.
+
+> Детальное описание: [text_extractors](guides/text_extractors.md)
