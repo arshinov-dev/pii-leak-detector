@@ -25,11 +25,36 @@ python main.py <путь_к_папке> --extract
 python main.py <путь_к_папке> --detect-pii
 ```
 
+Оценить риск и сформировать submit для бота:
+
+```bash
+python main.py <путь_к_папке> --risk --submit out/submit.txt --risk-report out/risk_report.md
+```
+
 Smoke-прогон на первых N файлах:
 
 ```bash
 python main.py <путь_к_папке> --detect-pii --extract-limit 50
 ```
+
+## Схема pipeline
+
+```mermaid
+flowchart LR
+    A["share"] --> B["file_search"]
+    B --> C["extraction_planner"]
+    C --> D["extraction_runner"]
+    D --> E["text_extractors"]
+    E --> F["TextBlock"]
+    F --> G["pii_detector"]
+    G --> H["risk_classifier"]
+    H --> I["submit.txt"]
+    H --> J["risk_report.md"]
+    C -. "planned OCR escalation" .-> K["future OCR"]
+    K -.-> F
+```
+
+> Полное описание цикла: [pipeline](guides/pipeline.md)
 
 ## Назначение файлов
 
@@ -92,3 +117,13 @@ python main.py <путь_к_папке> --detect-pii --extract-limit 50
 * специальные категории через keyword-детекторы.
 
 > Детальное описание: [pii_detector](guides/pii_detector.md)
+
+### risk_classifier.py
+
+Оценивает подозрительность файлов и формирует `.txt` submit:
+* учитывает категории ПДн, массовость, сочетания идентификаторов;
+* добавляет контекст пути и формата;
+* снижает score для вероятно публичных или деловых документов;
+* пишет пути от корня `share`, как ожидает бот.
+
+> Детальное описание: [risk_classifier](guides/risk_classifier.md)

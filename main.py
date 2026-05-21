@@ -4,6 +4,7 @@ import extraction_planner as ep
 import extraction_runner as er
 import file_search as fs
 import pii_detector as pii
+import risk_classifier as risk
 
 
 def _parse_args() -> argparse.Namespace:
@@ -30,6 +31,27 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="После базового извлечения текста найти категории ПДн.",
     )
+    parser.add_argument(
+        "--risk",
+        action="store_true",
+        help="Оценить риск и вывести сводку файлов-кандидатов для submit.",
+    )
+    parser.add_argument(
+        "--risk-threshold",
+        type=float,
+        default=risk.DEFAULT_SUBMIT_THRESHOLD,
+        help="Порог score для включения файла в submit.",
+    )
+    parser.add_argument(
+        "--submit",
+        default=None,
+        help="Записать .txt submit со списком подозрительных файлов.",
+    )
+    parser.add_argument(
+        "--risk-report",
+        default=None,
+        help="Записать Markdown-отчет с оценками риска и сработавшими правилами.",
+    )
     return parser.parse_args()
 
 
@@ -37,20 +59,33 @@ if __name__ == "__main__":
     args = _parse_args()
 
     try:
-        files_stream = fs.traverse_data_folder(args.folder)
+        share_root = fs.resolve_scan_root(args.folder)
+        files_stream = fs.traverse_data_folder(str(share_root))
         scan_results = fs.count_and_report_files(files_stream)
-        if args.plan or args.extract or args.detect_pii:
+        needs_risk = bool(args.risk or args.submit or args.risk_report)
+        if args.plan or args.extract or args.detect_pii or needs_risk:
             plans = list(ep.plan_extractions(scan_results))
         if args.plan:
             ep.print_plan_report(plans)
-        if args.extract or args.detect_pii:
+        if args.extract or args.detect_pii or needs_risk:
             extraction_plans = plans[: args.extract_limit] if args.extract_limit else plans
             results = list(er.run_extraction_plans(extraction_plans))
         if args.extract:
             er.print_extraction_report(results)
-        if args.detect_pii:
+        if args.detect_pii or needs_risk:
             pii_results = pii.scan_extraction_results(results)
+        if args.detect_pii:
             pii.print_pii_report(pii_results)
+        if needs_risk:
+            assessments = risk.assess_risks(pii_results, extraction_plans, results, str(share_root))
+        if args.risk:
+            risk.print_risk_report(assessments, threshold=args.risk_threshold)
+        if args.submit:
+            lines = risk.write_submit_file(assessments, args.submit, threshold=args.risk_threshold)
+            print(f"\nSubmit записан: {args.submit} ({len(lines)} файлов)")
+        if args.risk_report:
+            risk.write_risk_report(assessments, args.risk_report, threshold=args.risk_threshold)
+            print(f"Risk report записан: {args.risk_report}")
     except FileNotFoundError as exc:
         print(exc)
         raise SystemExit(1)
