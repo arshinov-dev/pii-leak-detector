@@ -7,7 +7,7 @@ from extraction_planner import ExtractionPlan
 from pii_detector import PiiFileResult
 
 
-DEFAULT_SUBMIT_THRESHOLD = 120.0
+DEFAULT_SUBMIT_THRESHOLD = 80.0
 
 HIGH_RISK_CATEGORIES = {
     "bank_card",
@@ -31,21 +31,22 @@ CATEGORY_WEIGHTS = {
     "mrz": 80,
     "bank_card": 65,
     "passport_rf": 60,
+    "identity_document": 35,
     "snils": 55,
     "inn_person": 45,
     "bank_account": 40,
     "birth_date": 30,
-    "health_data": 30,
-    "biometric_data": 30,
+    "health_data": 12,
+    "biometric_data": 18,
     "address": 18,
     "phone": 12,
     "email": 10,
     "fio": 8,
     "inn_legal": 8,
     "bik": 5,
-    "religion": 25,
-    "political_views": 25,
-    "nationality": 25,
+    "religion": 10,
+    "political_views": 10,
+    "nationality": 10,
 }
 
 SUSPICIOUS_PATH_KEYWORDS = (
@@ -85,6 +86,8 @@ BENIGN_PATH_KEYWORDS = (
     "brandbook",
     "instruction",
     "regulation",
+    "requisites",
+    "реквизит",
     "положение",
     "устав",
     "отчет",
@@ -182,11 +185,31 @@ def assess_file_risk(
     plan_strategy = plan.strategy if plan else ""
     family = plan.family if plan else None
     extension = plan.extension if plan else None
+    table_or_export = _looks_like_table_or_export(plan_strategy, family, extension)
+    ocr_used = _has_ocr_text(extraction_result)
+    embedded_document_payload = _has_embedded_document_payload(extraction_result)
+    weak_card_noise = _weak_single_card_noise(categories, family, table_or_export, folded_path)
+    strong_profile = _has_strong_person_profile(
+        categories,
+        family=family,
+        ocr_used=ocr_used,
+        weak_card_noise=weak_card_noise,
+    )
 
-    if any(category in categories for category in HIGH_RISK_CATEGORIES):
+    if _has_high_risk_identifier(categories, weak_card_noise):
         delta = 35
         score += delta
         hits.append(RiskRuleHit("high_risk_identifier", delta, "Есть государственный идентификатор, карта, CVV или MRZ."))
+
+    if categories.get("identity_document", 0) and (family in {"image", "video"} or ocr_used):
+        delta = 95
+        score += delta
+        hits.append(RiskRuleHit("identity_document_media", delta, "OCR/медиа содержит признаки удостоверения личности."))
+
+    if embedded_document_payload:
+        delta = 170
+        score += delta
+        hits.append(RiskRuleHit("embedded_identity_document_payload", delta, "Бинарный файл содержит embedded image payload, похожий на документ личности."))
 
     if categories.get("bank_card", 0) >= 5:
         delta = 35
@@ -198,7 +221,7 @@ def assess_file_risk(
         score += delta
         hits.append(RiskRuleHit("mass_snils", delta, "Много валидных СНИЛС."))
 
-    if categories.get("fio", 0) and _has_any(categories, ("passport_rf", "snils", "inn_person", "birth_date", "bank_card")):
+    if categories.get("fio", 0) and _has_profile_identifier(categories, weak_card_noise):
         delta = 30
         score += delta
         hits.append(RiskRuleHit("person_profile_combo", delta, "ФИО сочетается с сильными идентификаторами."))
@@ -208,17 +231,17 @@ def assess_file_risk(
         score += delta
         hits.append(RiskRuleHit("contact_profile_combo", delta, "ФИО сочетается с контактными или адресными данными."))
 
-    if _has_any(categories, SPECIAL_CATEGORIES):
+    if _has_any(categories, SPECIAL_CATEGORIES) and strong_profile:
         delta = 20
         score += delta
         hits.append(RiskRuleHit("special_categories", delta, "Есть специальные категории или биометрические признаки."))
 
-    if _looks_like_table_or_export(plan_strategy, family, extension) and total_count >= 100:
+    if table_or_export and total_count >= 100:
         delta = 28
         score += delta
         hits.append(RiskRuleHit("mass_table_pii", delta, "Массовая таблица или выгрузка с большим числом ПДн."))
 
-    if _looks_like_table_or_export(plan_strategy, family, extension) and _has_any(categories, HIGH_RISK_CATEGORIES):
+    if table_or_export and _has_any(categories, HIGH_RISK_CATEGORIES):
         delta = 35
         score += delta
         hits.append(RiskRuleHit("sensitive_export", delta, "Табличный/выгрузочный формат содержит чувствительные идентификаторы."))
@@ -245,6 +268,38 @@ def assess_file_risk(
         hits.append(RiskRuleHit("unread_suspicious_file", delta, "Файл не прочитан, но путь/формат выглядит подозрительно."))
 
     matched_benign = [keyword for keyword in BENIGN_PATH_KEYWORDS if keyword in folded_path]
+    publicish_container = _looks_like_publicish_container(folded_path, family)
+
+    if family == "video" and not pii_result.has_pii:
+        delta = 130
+        score += delta
+        hits.append(RiskRuleHit("video_manual_review_candidate", delta, "Видео требует ручной проверки; OCR может содержать документ."))
+
+    if _misc_public_bucket_without_context(folded_path, family, matched_suspicious):
+        delta = -220
+        score += delta
+        hits.append(RiskRuleHit("misc_public_bucket_without_context", delta, "Файл из прочего публичного массива без явного leak-контекста."))
+
+    if family == "web" and not strong_profile:
+        delta = -110
+        score += delta
+        hits.append(RiskRuleHit("web_snapshot_without_profile", delta, "HTML-снимок без сильного профиля физлица похож на публичный веб-контент."))
+
+    if publicish_container and not matched_suspicious and not strong_profile and not table_or_export:
+        delta = -75
+        score += delta
+        hits.append(RiskRuleHit("public_container_without_profile", delta, "Публичный/прочий контейнер без сильного профиля физлица."))
+
+    if matched_benign and not strong_profile and not table_or_export:
+        delta = -70
+        score += delta
+        hits.append(RiskRuleHit("benign_document_without_profile", delta, f"Деловой/публичный документ без сильного профиля: {', '.join(matched_benign[:3])}."))
+
+    if weak_card_noise:
+        delta = -95
+        score += delta
+        hits.append(RiskRuleHit("weak_single_card_noise", delta, "Одиночные Luhn-совпадения в документе/HTML без карточного контекста считаются шумом."))
+
     if matched_benign and not _has_any(categories, HIGH_RISK_CATEGORIES) and total_count < 50:
         delta = -25
         score += delta
@@ -255,14 +310,18 @@ def assess_file_risk(
         score += delta
         hits.append(RiskRuleHit("business_requisites_only", delta, "Похоже на легитимные реквизиты организации без профиля физлица."))
 
-    if matched_benign and not matched_suspicious and not _looks_like_table_or_export(plan_strategy, family, extension):
+    if matched_benign and not matched_suspicious and not table_or_export:
         noisy_sensitive = _has_any(categories, ("bank_card", "snils", "inn_legal")) and not categories.get("fio")
         if noisy_sensitive:
             delta = -120
             score += delta
             hits.append(RiskRuleHit("likely_public_number_noise", delta, "Публичный/нормативный документ с числовыми совпадениями без ФИО."))
+            if not _has_any(categories, ("passport_rf", "snils", "inn_person", "mrz", "cvv")):
+                delta = -90
+                score += delta
+                hits.append(RiskRuleHit("public_numeric_noise_without_person", delta, "Числовые совпадения без госидентификатора или профиля физлица."))
 
-    if not pii_result.has_pii:
+    if not pii_result.has_pii and family != "video" and not embedded_document_payload:
         score = min(score, 25)
 
     score = max(0.0, round(score, 2))
@@ -274,7 +333,7 @@ def assess_file_risk(
         categories=categories,
         rule_hits=hits,
         recommendation=_recommendation(score),
-        document_type=_document_type(plan, categories, folded_path),
+        document_type=_document_type(plan, categories, folded_path, embedded_document_payload),
     )
 
 
@@ -407,6 +466,95 @@ def _business_requisites_only(categories: Dict[str, int]) -> bool:
     return set(categories).issubset(BUSINESS_REQUISITE_CATEGORIES)
 
 
+def _has_high_risk_identifier(categories: Dict[str, int], weak_card_noise: bool) -> bool:
+    return any(
+        category in categories
+        for category in HIGH_RISK_CATEGORIES
+        if category != "bank_card" or not weak_card_noise
+    )
+
+
+def _has_profile_identifier(categories: Dict[str, int], weak_card_noise: bool) -> bool:
+    if _has_any(categories, ("passport_rf", "snils", "inn_person", "birth_date", "bank_account")):
+        return True
+    return categories.get("bank_card", 0) > 0 and not weak_card_noise
+
+
+def _has_strong_person_profile(
+    categories: Dict[str, int],
+    family: Optional[str],
+    ocr_used: bool,
+    weak_card_noise: bool,
+) -> bool:
+    if _has_any(categories, ("passport_rf", "snils", "inn_person", "mrz", "cvv")):
+        return True
+    if categories.get("identity_document", 0) and categories.get("birth_date", 0):
+        return True
+    if categories.get("identity_document", 0) and categories.get("fio", 0) and (family in {"image", "video"} or ocr_used):
+        return True
+    if categories.get("bank_card", 0) >= 3:
+        return True
+    if categories.get("fio", 0) and _has_profile_identifier(categories, weak_card_noise):
+        return True
+    return False
+
+
+def _looks_like_publicish_container(folded_path: str, family: Optional[str]) -> bool:
+    if family not in {"document", "web", "presentation"}:
+        return False
+    return "/прочее/" in folded_path or "/документы партнеров/" in folded_path or "/сайты/" in folded_path
+
+
+def _misc_public_bucket_without_context(
+    folded_path: str,
+    family: Optional[str],
+    matched_suspicious: List[str],
+) -> bool:
+    if matched_suspicious:
+        return False
+    if "/прочее/" not in folded_path and "/документы партнеров/" not in folded_path:
+        return False
+    return family in {"document", "web", "presentation", "structured", "spreadsheet"}
+
+
+def _has_ocr_text(extraction_result: Optional[Any]) -> bool:
+    if not extraction_result:
+        return False
+    return any(
+        getattr(block, "metadata", {}).get("ocr")
+        for block in getattr(extraction_result, "blocks", [])
+    )
+
+
+def _has_embedded_document_payload(extraction_result: Optional[Any]) -> bool:
+    if not extraction_result:
+        return False
+    return any(
+        getattr(block, "metadata", {}).get("embedded_payload")
+        and getattr(block, "metadata", {}).get("embedded_document_like")
+        for block in getattr(extraction_result, "blocks", [])
+    )
+
+
+def _weak_single_card_noise(
+    categories: Dict[str, int],
+    family: Optional[str],
+    table_or_export: bool,
+    folded_path: str,
+) -> bool:
+    if categories.get("bank_card", 0) > 2:
+        return False
+    if not categories.get("bank_card"):
+        return False
+    if table_or_export or family not in {"document", "web"}:
+        return False
+    if any(keyword in folded_path for keyword in ("card", "карта", "cvv", "cvc", "bank", "банк")):
+        return False
+    if _has_any(categories, ("passport_rf", "snils", "inn_person", "mrz", "cvv")):
+        return False
+    return True
+
+
 def _looks_like_table_or_export(strategy: str, family: Optional[str], extension: Optional[str]) -> bool:
     return (
         strategy in {"structured_parse", "table_parse"}
@@ -443,9 +591,18 @@ def _recommendation(score: float) -> str:
     return "do_not_submit_baseline"
 
 
-def _document_type(plan: Optional[ExtractionPlan], categories: Dict[str, int], folded_path: str) -> str:
+def _document_type(
+    plan: Optional[ExtractionPlan],
+    categories: Dict[str, int],
+    folded_path: str,
+    embedded_document_payload: bool = False,
+) -> str:
+    if embedded_document_payload:
+        return "embedded_identity_document"
     if categories.get("bank_card", 0) >= 5:
         return "card_dataset"
+    if categories.get("identity_document", 0):
+        return "identity_document_media"
     if categories.get("snils", 0) >= 5:
         return "identifier_list"
     if _has_any(categories, ("passport_rf", "birth_date", "inn_person")) and categories.get("fio"):

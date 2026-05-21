@@ -182,7 +182,15 @@ def build_extraction_plan(scan_result: Dict[str, Any]) -> ExtractionPlan:
         plan.warnings.append("Низкая уверенность определения формата.")
 
     if family == "executable":
-        return _skip(plan, "executable", "Исполняемые файлы исключаются из ПДн-пайплайна.")
+        return _with_primary(
+            plan,
+            strategy="binary_embedded_payload_probe",
+            extractor="binary_embedded_payload_extractor",
+            source="binary",
+            reason="Исполняемый файл безопасно проверяется как контейнер: ищем embedded изображения/документы без запуска файла.",
+            priority=35,
+            params={"max_payload_bytes": 20 * 1024 * 1024},
+        )
 
     if family == "archive":
         plan.strategy = "defer_archive"

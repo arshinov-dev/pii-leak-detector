@@ -20,6 +20,10 @@ EXTRACTOR_REGISTRY: Dict[str, ExtractorFn] = {
     "pdf_text_extractor": tx.extract_pdf_text,
     "docx_text_extractor": tx.extract_docx_text,
     "rtf_text_extractor": tx.extract_rtf_text,
+    "binary_embedded_payload_extractor": tx.extract_binary_embedded_payload_text,
+    "image_ocr_extractor": tx.extract_ocr_text,
+    "pdf_page_ocr_extractor": tx.extract_ocr_text,
+    "video_frame_ocr_extractor": tx.extract_ocr_text,
 }
 
 
@@ -163,9 +167,9 @@ def print_extraction_report(results: Iterable[ExtractionRunResult]) -> None:
 
 
 def _run_step(plan: ExtractionPlan, step: ExtractionStep, result: ExtractionRunResult) -> None:
-    if "ocr" in step.extractor:
+    if "ocr" in step.extractor and not _should_run_ocr_step(plan, step, result):
         result.skipped_steps.append(step.extractor)
-        result.warnings.append(f"{step.extractor}: OCR steps are deferred in the basic text extraction layer.")
+        result.warnings.append(f"{step.extractor}: OCR escalation skipped by targeting rules.")
         return
 
     extractor = EXTRACTOR_REGISTRY.get(step.extractor)
@@ -183,7 +187,10 @@ def _run_step(plan: ExtractionPlan, step: ExtractionStep, result: ExtractionRunR
         return
 
     try:
-        result.blocks.extend(extractor(plan.path, step.params))
+        params = dict(step.params)
+        if "ocr" in step.extractor:
+            params.update({"extractor_name": step.extractor, "source_type": step.source})
+        result.blocks.extend(extractor(plan.path, params))
     except Exception as exc:
         result.failed_steps.append(step.extractor)
         result.blocks.extend(
@@ -194,6 +201,28 @@ def _run_step(plan: ExtractionPlan, step: ExtractionStep, result: ExtractionRunR
                 source_type=step.source,
             )
         )
+
+
+def _should_run_ocr_step(plan: ExtractionPlan, step: ExtractionStep, result: ExtractionRunResult) -> bool:
+    folded_path = plan.path.casefold()
+    suspicious_name = bool(plan.metadata.get("suspicious_name"))
+    high_ocr_context = bool(plan.metadata.get("high_ocr_context"))
+
+    if step.extractor == "image_ocr_extractor":
+        return plan.extension in {"tif", "tiff"} or suspicious_name or "/архив сканы/" in folded_path
+
+    if step.extractor == "pdf_page_ocr_extractor":
+        has_empty_page = any(
+            "цифрового текста" in warning.casefold()
+            for block in result.blocks
+            for warning in block.warnings
+        )
+        return (not result.has_text or has_empty_page) and (suspicious_name or high_ocr_context or not result.has_text)
+
+    if step.extractor == "video_frame_ocr_extractor":
+        return suspicious_name or high_ocr_context or plan.extension == "mp4"
+
+    return suspicious_name or high_ocr_context or not result.has_text
 
 
 def _print_counter(title: str, counter: Dict[str, int]) -> None:

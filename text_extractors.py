@@ -3,6 +3,7 @@ import html
 import io
 import json
 import re
+import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
@@ -17,6 +18,35 @@ MAX_TEXT_BLOCK_CHARS = 50_000
 CSV_ROWS_PER_BLOCK = 250
 JSON_MAX_PARSE_BYTES = 50 * 1024 * 1024
 SPREADSHEET_ROWS_PER_BLOCK = 250
+BINARY_PAYLOAD_MIN_OFFSET = 4096
+BINARY_PAYLOAD_MIN_BYTES = 32 * 1024
+BINARY_PAYLOAD_MAX_BYTES = 20 * 1024 * 1024
+
+EMBEDDED_PAYLOAD_SIGNATURES = (
+    ("tiff", b"II*\x00", ".tif"),
+    ("tiff", b"MM\x00*", ".tif"),
+    ("jpeg", b"\xff\xd8\xff", ".jpg"),
+    ("png", b"\x89PNG\r\n\x1a\n", ".png"),
+    ("pdf", b"%PDF", ".pdf"),
+    ("zip", b"PK\x03\x04", ".zip"),
+)
+
+DOCUMENT_LIKE_OCR_KEYWORDS = (
+    "identity card",
+    "identification card",
+    "personal id",
+    "personalausweis",
+    "date of birth",
+    "date ot birth",
+    "given names",
+    "surname",
+    "nationality",
+    "holder",
+    "this card",
+    "passport",
+    "удостоверение",
+    "паспорт",
+)
 
 DOCX_TEXT_PART_RE = re.compile(
     r"^word/(document|footnotes|endnotes|comments|header\d+|footer\d+)\.xml$"
@@ -289,6 +319,231 @@ def extract_unsupported(
             source_type=source_type,
             extraction_method=extractor_name,
             warning=reason,
+        )
+    ]
+
+
+def extract_binary_embedded_payload_text(file_path: str, params: Optional[Dict[str, Any]] = None) -> List[TextBlock]:
+    params = params or {}
+    path = Path(file_path)
+    max_payload_bytes = int(params.get("max_payload_bytes") or BINARY_PAYLOAD_MAX_BYTES)
+
+    try:
+        data = path.read_bytes()
+    except Exception as exc:
+        return [
+            _diagnostic_block(
+                file_path=file_path,
+                source_type="binary",
+                extraction_method="binary_embedded_payload_extractor",
+                warning=f"Не удалось прочитать бинарный файл для поиска embedded payload: {exc}",
+            )
+        ]
+
+    payloads = _find_embedded_payloads(data, max_payload_bytes=max_payload_bytes)
+    blocks: List[TextBlock] = []
+    for payload_index, payload in enumerate(payloads):
+        if payload["kind"] in {"tiff", "jpeg", "png"}:
+            blocks.extend(_ocr_embedded_image_payload(file_path, payload_index, payload))
+        else:
+            blocks.append(
+                _embedded_payload_block(
+                    file_path=file_path,
+                    block_index=payload_index,
+                    text=f"Embedded {payload['kind'].upper()} payload found in binary file.",
+                    payload=payload,
+                    document_like=False,
+                    warnings=["Embedded payload найден; OCR/парсинг для этого типа не выполнялся."],
+                )
+            )
+
+    return blocks or [
+        _diagnostic_block(
+            file_path=file_path,
+            source_type="binary",
+            extraction_method="binary_embedded_payload_extractor",
+            warning="Embedded payload по известным сигнатурам не найден.",
+        )
+    ]
+
+
+def _find_embedded_payloads(data: bytes, max_payload_bytes: int) -> List[Dict[str, Any]]:
+    payloads: List[Dict[str, Any]] = []
+    seen_offsets = set()
+    for kind, signature, suffix in EMBEDDED_PAYLOAD_SIGNATURES:
+        start = BINARY_PAYLOAD_MIN_OFFSET
+        while True:
+            offset = data.find(signature, start)
+            if offset < 0:
+                break
+            start = offset + 1
+            if offset in seen_offsets:
+                continue
+            payload_size = len(data) - offset
+            if payload_size < BINARY_PAYLOAD_MIN_BYTES or payload_size > max_payload_bytes:
+                continue
+            payloads.append(
+                {
+                    "kind": kind,
+                    "suffix": suffix,
+                    "offset": offset,
+                    "size": payload_size,
+                    "bytes": data[offset:],
+                }
+            )
+            seen_offsets.add(offset)
+            break
+    return sorted(payloads, key=lambda item: item["offset"])
+
+
+def _ocr_embedded_image_payload(file_path: str, payload_index: int, payload: Dict[str, Any]) -> List[TextBlock]:
+    try:
+        from PIL import Image  # type: ignore
+    except Exception as exc:
+        return [
+            _embedded_payload_block(
+                file_path=file_path,
+                block_index=payload_index,
+                text=f"Embedded {payload['kind'].upper()} image payload found in binary file.",
+                payload=payload,
+                document_like=False,
+                warnings=[f"Pillow недоступен для проверки embedded image: {exc}"],
+            )
+        ]
+
+    try:
+        image = Image.open(io.BytesIO(payload["bytes"]))
+        image.verify()
+        image = Image.open(io.BytesIO(payload["bytes"]))
+        width, height = image.size
+    except Exception as exc:
+        return [
+            _embedded_payload_block(
+                file_path=file_path,
+                block_index=payload_index,
+                text=f"Embedded {payload['kind'].upper()} signature found, but image validation failed.",
+                payload=payload,
+                document_like=False,
+                warnings=[f"Embedded image не прошёл проверку Pillow: {exc}"],
+            )
+        ]
+
+    ocr_text = ""
+    warnings: List[str] = []
+    try:
+        import ocr_extractor  # type: ignore
+
+        with tempfile.NamedTemporaryFile(suffix=payload["suffix"]) as temp_file:
+            temp_file.write(payload["bytes"])
+            temp_file.flush()
+            ocr_text = normalize_text("\n".join(ocr_extractor.extract_text(temp_file.name)))
+    except Exception as exc:
+        warnings.append(f"OCR embedded image не выполнен: {type(exc).__name__}: {exc}")
+
+    document_like = _looks_like_document_ocr(ocr_text)
+    text = ocr_text or f"Embedded {payload['kind'].upper()} image payload found in binary file."
+    return [
+        _embedded_payload_block(
+            file_path=file_path,
+            block_index=payload_index,
+            text=text,
+            payload={**payload, "image_width": width, "image_height": height},
+            document_like=document_like,
+            warnings=warnings,
+        )
+    ]
+
+
+def _embedded_payload_block(
+    file_path: str,
+    block_index: int,
+    text: str,
+    payload: Dict[str, Any],
+    document_like: bool,
+    warnings: Optional[List[str]] = None,
+) -> TextBlock:
+    return TextBlock(
+        file_path=file_path,
+        source_type="embedded_payload",
+        block_index=block_index,
+        page_or_sheet=f"embedded payload @{payload['offset']}",
+        extraction_method="binary_embedded_payload_extractor",
+        text=normalize_text(text),
+        warnings=warnings or [],
+        metadata={
+            "embedded_payload": True,
+            "embedded_payload_kind": payload["kind"],
+            "embedded_payload_offset": payload["offset"],
+            "embedded_payload_size": payload["size"],
+            "embedded_document_like": document_like,
+            "ocr": bool(text and document_like),
+            "image_width": payload.get("image_width"),
+            "image_height": payload.get("image_height"),
+        },
+    )
+
+
+def _looks_like_document_ocr(text: str) -> bool:
+    folded = normalize_text(text).casefold()
+    if not folded:
+        return False
+    if any(keyword in folded for keyword in DOCUMENT_LIKE_OCR_KEYWORDS):
+        return True
+    return bool(re.search(r"\b\d{2}[./-]\d{2}[./-]\d{4}\b", folded) and re.search(r"\b(card|id|passport)\b", folded))
+
+
+def extract_ocr_text(file_path: str, params: Optional[Dict[str, Any]] = None) -> List[TextBlock]:
+    params = params or {}
+    try:
+        import ocr_extractor  # type: ignore
+    except Exception as exc:
+        return [
+            _diagnostic_block(
+                file_path=file_path,
+                source_type=params.get("source_type") or "ocr",
+                extraction_method=params.get("extractor_name") or "ocr_extractor",
+                warning=f"OCR extractor dependencies are unavailable: {exc}",
+            )
+        ]
+
+    try:
+        texts = ocr_extractor.extract_text(file_path)
+    except Exception as exc:
+        return [
+            _diagnostic_block(
+                file_path=file_path,
+                source_type=params.get("source_type") or "ocr",
+                extraction_method=params.get("extractor_name") or "ocr_extractor",
+                warning=f"OCR extractor failed: {type(exc).__name__}: {exc}",
+            )
+        ]
+
+    blocks: List[TextBlock] = []
+    for index, text in enumerate(texts):
+        normalized = normalize_text(text)
+        blocks.append(
+            TextBlock(
+                file_path=file_path,
+                source_type=params.get("source_type") or "ocr",
+                block_index=index,
+                page_or_sheet=f"ocr block {index + 1}",
+                extraction_method=params.get("extractor_name") or "ocr_extractor",
+                text=normalized,
+                warnings=[] if normalized else ["OCR не обнаружил текст."],
+                metadata={
+                    "ocr": True,
+                    "ocr_engine": "tesseract",
+                    "char_count": len(normalized),
+                },
+            )
+        )
+
+    return blocks or [
+        _diagnostic_block(
+            file_path=file_path,
+            source_type=params.get("source_type") or "ocr",
+            extraction_method=params.get("extractor_name") or "ocr_extractor",
+            warning="OCR не вернул текстовые блоки.",
         )
     ]
 

@@ -12,15 +12,15 @@ MAX_EXAMPLES_PER_FINDING = 3
 
 EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]{1,64}@[\w.-]+\.[A-Za-zА-Яа-яЁё]{2,}(?![\w.-])")
 PHONE_RE = re.compile(
-    r"(?<!\d)(?:\+?7|8)[\s\-.(]{0,3}\d{3}[\s\-.)]{0,3}\d{3}[\s\-]{0,2}\d{2}[\s\-]{0,2}\d{2}(?!\d)"
+    r"(?<![A-Za-z0-9-])(?:\+?7|8)[\s\-.(]{0,3}\d{3}[\s\-.)]{0,3}\d{3}[\s\-]{0,2}\d{2}[\s\-]{0,2}\d{2}(?![A-Za-z0-9-])"
 )
-SNILS_RE = re.compile(r"(?<!\d)(\d{3})[- ]?(\d{3})[- ]?(\d{3})[- ]?(\d{2})(?!\d)")
-INN_RE = re.compile(r"(?<!\d)(\d{10}|\d{12})(?!\d)")
+SNILS_RE = re.compile(r"(?<![A-Za-z0-9-])(\d{3})[- ]?(\d{3})[- ]?(\d{3})[- ]?(\d{2})(?![A-Za-z0-9-])")
+INN_RE = re.compile(r"(?<![A-Za-z0-9-])(\d{10}|\d{12})(?![A-Za-z0-9-])")
 PASSPORT_RE = re.compile(
-    r"(?<!\d)(?:серия\s*)?(\d{2}\s?\d{2})\s*(?:номер|№|N|No|Nº)?\s*(\d{6})(?!\d)",
+    r"(?<![A-Za-z0-9])(?:серия\s*)?(\d{2}\s?\d{2})[\s,;:№#-]*(?:номер|№|N|No|Nº)?[\s:№#-]*(\d{6})(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
-CARD_RE = re.compile(r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)")
+CARD_RE = re.compile(r"(?<![A-Za-z0-9-])(?:\d[ -]?){13,19}(?![A-Za-z0-9-])")
 BIK_RE = re.compile(r"(?<!\d)(?:БИК|BIC)\s*[:№#-]?\s*(\d{9})(?!\d)", re.IGNORECASE)
 BANK_ACCOUNT_RE = re.compile(
     r"(?<!\d)(?:р/?с|расч[её]тн(?:ый|ого)?\s+сч[её]т|сч[её]т)\s*[:№#-]?\s*(\d{20})(?!\d)",
@@ -33,6 +33,11 @@ DOB_RE = re.compile(
     r"((?:0?[1-9]|[12]\d|3[01])[./-](?:0?[1-9]|1[0-2])[./-](?:19|20)\d{2}|(?:19|20)\d{2}[./-](?:0?[1-9]|1[0-2])[./-](?:0?[1-9]|[12]\d|3[01]))",
     re.IGNORECASE,
 )
+DOB_TRAILING_RE = re.compile(
+    r"((?:0?[1-9]|[12]\d|3[01])[./-](?:0?[1-9]|1[0-2])[./-](?:19|20)\d{2}|(?:19|20)\d{2}[./-](?:0?[1-9]|1[0-2])[./-](?:0?[1-9]|[12]\d|3[01]))"
+    r"\s*(?:г\.?|года)?\s*(?:рождения|рожд\.?)",
+    re.IGNORECASE,
+)
 MRZ_RE = re.compile(r"\b[A-Z0-9<]{25,44}\b")
 FIO_CANDIDATE_RE = re.compile(
     r"(?<![А-Яа-яЁё])"
@@ -41,14 +46,31 @@ FIO_CANDIDATE_RE = re.compile(
     r"[А-ЯЁ][а-яё]{2,}(?:-[А-ЯЁ][а-яё]{1,})?)"
     r"(?![А-Яа-яЁё])"
 )
+FORM_FIO_RE = re.compile(
+    r"Фамилия\s*[:№#-]?\s*([А-ЯЁ][а-яё-]{1,})\s+"
+    r"Имя\s*[:№#-]?\s*([А-ЯЁ][а-яё-]{1,})\s+"
+    r"Отчество\s*[:№#-]?\s*([А-ЯЁ][а-яё-]{2,})",
+    re.IGNORECASE,
+)
+IDENTITY_DOCUMENT_RE = re.compile(
+    r"паспорт|удостоверени[ея]\s+личности|водительск(?:ое|ие)\s+удостоверени[ея]|"
+    r"identification\s+card|identity\s+card|national\s+id|ob[cč]ansk[yý]\s+pr[uů]kaz|"
+    r"czech\s+republic|ceska\s+republika",
+    re.IGNORECASE,
+)
 
 PASSPORT_CONTEXT_RE = re.compile(r"паспорт|выдан|код\s+подразделения|удостоверени[ея]\s+личности", re.IGNORECASE)
 ADDRESS_CONTEXT_RE = re.compile(
-    r"\b(?:адрес|прожива|регистрац|улица|ул\.|проспект|пр-т|переулок|пер\.|дом|д\.|квартира|кв\.|корпус|строение|город|г\.)\b",
+    r"\b(?:адрес[уа]?|прожива|регистрац|улица|ул\.|проспект|пр-т|переулок|пер\.|дом|д\.|квартира|кв\.|корпус|строение|город|г\.)\b",
     re.IGNORECASE,
 )
 ADDRESS_LINE_RE = re.compile(
     r"(?:адрес|прожива|регистрац|ул\.|улица|проспект|пр-т|дом|д\.|квартира|кв\.|г\.)[^\n]{0,180}\d[^\n]{0,80}",
+    re.IGNORECASE,
+)
+ADDRESS_NEXT_LINE_RE = re.compile(
+    r"(?:адрес(?:\s+(?:регистрации|фактического\s+проживания|проживания))?|зарегистрирован[а-яё]*\s+по\s+адрес[уа]?|прожива[^\n]{0,50})"
+    r"[^\n:]*[:\n]\s*([^\n]{0,220}\d[^\n]{0,120})",
     re.IGNORECASE,
 )
 
@@ -69,8 +91,6 @@ SPECIAL_KEYWORD_GROUPS: Dict[str, Sequence[str]] = {
         "диагноз",
         "заболев",
         "инвалид",
-        "больничн",
-        "медицинск",
         "анамнез",
         "анализ крови",
         "вич",
@@ -90,7 +110,6 @@ SPECIAL_KEYWORD_GROUPS: Dict[str, Sequence[str]] = {
     ),
     "religion": (
         "вероисповед",
-        "религи",
         "православ",
         "мусульман",
         "ислам",
@@ -102,27 +121,19 @@ SPECIAL_KEYWORD_GROUPS: Dict[str, Sequence[str]] = {
         "политическая партия",
         "член партии",
         "партийность",
-        "избирател",
-        "голосован",
     ),
     "nationality": (
         "национальность",
         "этническ",
         "раса",
         "расовая",
-        "гражданство",
     ),
 }
 
 STEM_KEYWORDS = {
     "заболев",
     "инвалид",
-    "больничн",
-    "медицинск",
     "политическ",
-    "избирател",
-    "голосован",
-    "религи",
     "этническ",
 }
 
@@ -211,6 +222,7 @@ def detect_pii_in_block(block: TextBlock) -> List[PiiFinding]:
         _detect_birth_dates,
         _detect_addresses,
         _detect_mrz,
+        _detect_identity_documents,
         _detect_fio,
     )
 
@@ -389,6 +401,7 @@ def _detect_cvv(block: TextBlock) -> Optional[PiiFinding]:
 
 def _detect_birth_dates(block: TextBlock) -> Optional[PiiFinding]:
     values = [match.group(1) for match in DOB_RE.finditer(block.text)]
+    values.extend(match.group(1) for match in DOB_TRAILING_RE.finditer(block.text))
     return _finding(block, "birth_date", values, 0.85, _mask_birth_date, "regex+context:birth_date")
 
 
@@ -397,6 +410,10 @@ def _detect_addresses(block: TextBlock) -> Optional[PiiFinding]:
     for match in ADDRESS_LINE_RE.finditer(block.text):
         value = match.group(0).strip()
         if ADDRESS_CONTEXT_RE.search(value):
+            values.append(value)
+    for match in ADDRESS_NEXT_LINE_RE.finditer(block.text):
+        value = match.group(1).strip()
+        if ADDRESS_CONTEXT_RE.search(match.group(0)):
             values.append(value)
     return _finding(block, "address", values, 0.7, _mask_address, "regex+context:address")
 
@@ -410,8 +427,23 @@ def _detect_mrz(block: TextBlock) -> Optional[PiiFinding]:
     return _finding(block, "mrz", values, 0.92, _mask_mrz, "regex:mrz")
 
 
+def _detect_identity_documents(block: TextBlock) -> Optional[PiiFinding]:
+    values = [match.group(0) for match in IDENTITY_DOCUMENT_RE.finditer(block.text)]
+    return _finding(
+        block,
+        "identity_document",
+        values,
+        0.75,
+        lambda value: value[:40],
+        "keyword:identity_document",
+        deduplicate=True,
+    )
+
+
 def _detect_fio(block: TextBlock) -> Optional[PiiFinding]:
     values = []
+    for match in FORM_FIO_RE.finditer(block.text):
+        values.append(" ".join(match.groups()))
     for match in FIO_CANDIDATE_RE.finditer(block.text):
         value = match.group(1)
         words = value.split()
