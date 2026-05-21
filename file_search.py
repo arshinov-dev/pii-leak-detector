@@ -530,7 +530,7 @@ def traverse_data_folder(folder_name: str, verbose: bool = True) -> Iterator[Pat
         print(f"Сканирую: {target_dir}")
         print("Пожалуйста, подождите...\n")
 
-    for file_path in target_dir.rglob("*"):
+    for file_path in sorted(target_dir.rglob("*"), key=lambda path: path.as_posix().casefold()):
         if file_path.is_file():
             yield file_path
 

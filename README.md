@@ -7,6 +7,12 @@
 python main.py <путь_к_папке>
 ```
 
+Быстро сформировать submit без массового OCR/PDF-разбора:
+
+```bash
+python main.py <путь_к_папке> --fast
+```
+
 Построить сводку планов извлечения после инвентаризации:
 
 ```bash
@@ -29,6 +35,12 @@ python main.py <путь_к_папке> --detect-pii
 
 ```bash
 python main.py <путь_к_папке> --risk --submit out/submit.txt --risk-report out/risk_report.md
+```
+
+Запустить глубокий прогон с целевыми OCR-эскалациями:
+
+```bash
+python main.py <путь_к_папке> --risk --ocr --submit out/submit_ocr.txt --risk-report out/risk_report_ocr.md
 ```
 
 Smoke-прогон на первых N файлах:
