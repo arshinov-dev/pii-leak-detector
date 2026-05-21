@@ -19,10 +19,16 @@ python main.py <путь_к_папке> --plan
 python main.py <путь_к_папке> --extract
 ```
 
+Найти категории ПДн после базового извлечения:
+
+```bash
+python main.py <путь_к_папке> --detect-pii
+```
+
 Smoke-прогон на первых N файлах:
 
 ```bash
-python main.py <путь_к_папке> --extract --extract-limit 50
+python main.py <путь_к_папке> --detect-pii --extract-limit 50
 ```
 
 ## Назначение файлов
@@ -76,3 +82,13 @@ python main.py <путь_к_папке> --extract --extract-limit 50
 Исполняет primary-шаги из `ExtractionPlan` и собирает `TextBlock`-и.
 
 > Детальное описание: [text_extractors](guides/text_extractors.md)
+
+### pii_detector.py
+
+Ищет категории ПДн в `TextBlock`-ах:
+* ФИО, email, телефоны, адреса и даты рождения;
+* паспорт РФ, СНИЛС, ИНН, MRZ;
+* банковские карты, счета, БИК и CVV;
+* специальные категории через keyword-детекторы.
+
+> Детальное описание: [pii_detector](guides/pii_detector.md)
