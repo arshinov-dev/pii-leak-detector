@@ -14,6 +14,7 @@ import filetype
 SAMPLE_BYTES = 65536
 TEXT_ENCODINGS = ("utf-8-sig", "utf-8", "cp1251")
 CSV_DELIMITERS = ",;\t|"
+SYSTEM_METADATA_FILES = {".DS_Store", "Thumbs.db", "desktop.ini"}
 
 
 FORMAT_REGISTRY: Dict[str, Dict[str, Any]] = {
@@ -531,7 +532,7 @@ def traverse_data_folder(folder_name: str, verbose: bool = True) -> Iterator[Pat
         print("Пожалуйста, подождите...\n")
 
     for file_path in sorted(target_dir.rglob("*"), key=lambda path: path.as_posix().casefold()):
-        if file_path.is_file():
+        if file_path.is_file() and file_path.name not in SYSTEM_METADATA_FILES:
             yield file_path
 
 

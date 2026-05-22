@@ -3,50 +3,66 @@
 
 ## Как запустить:
 
+Основной быстрый запуск для submit:
+
 ```bash
-python main.py <путь_к_папке>
+python3 main.py share
 ```
 
-Быстро сформировать submit без массового OCR/PDF-разбора:
+Будут созданы:
+
+```text
+out/submit_fast.txt
+out/risk_report_fast.md
+out/pipeline_report_fast.md
+```
+
+То же самое с явным флагом:
 
 ```bash
-python main.py <путь_к_папке> --fast
+python3 main.py <путь_к_папке> --fast
+```
+
+Только инвентаризация типов файлов:
+
+```bash
+python3 main.py <путь_к_папке> --scan-only
 ```
 
 Построить сводку планов извлечения после инвентаризации:
 
 ```bash
-python main.py <путь_к_папке> --plan
+python3 main.py <путь_к_папке> --plan
 ```
 
 Выполнить базовое извлечение текста без OCR:
 
 ```bash
-python main.py <путь_к_папке> --extract
+python3 main.py <путь_к_папке> --extract
 ```
 
 Найти категории ПДн после базового извлечения:
 
 ```bash
-python main.py <путь_к_папке> --detect-pii
+python3 main.py <путь_к_папке> --detect-pii
 ```
 
-Оценить риск и сформировать submit для бота:
+Полный риск-прогон по всем primary extractor-ам:
 
 ```bash
-python main.py <путь_к_папке> --risk --submit out/submit.txt --risk-report out/risk_report.md
+python3 main.py <путь_к_папке> --risk --submit out/submit.txt --risk-report out/risk_report.md
 ```
 
-Запустить глубокий прогон с целевыми OCR-эскалациями:
+Глубокий прогон с OCR-эскалациями. Он может работать долго на больших наборах PDF/сканов/изображений:
 
 ```bash
-python main.py <путь_к_папке> --risk --ocr --submit out/submit_ocr.txt --risk-report out/risk_report_ocr.md
+python3 main.py <путь_к_папке> --risk --ocr --submit out/submit_ocr.txt --risk-report out/risk_report_ocr.md
 ```
 
 Smoke-прогон на первых N файлах:
 
 ```bash
-python main.py <путь_к_папке> --detect-pii --extract-limit 50
+python3 main.py <путь_к_папке> --detect-pii --extract-limit 50
 ```
 
 ## Схема pipeline

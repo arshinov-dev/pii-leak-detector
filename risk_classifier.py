@@ -7,7 +7,7 @@ from extraction_planner import ExtractionPlan
 from pii_detector import PiiFileResult
 
 
-DEFAULT_SUBMIT_THRESHOLD = 80.0
+DEFAULT_SUBMIT_THRESHOLD = 120.0
 
 HIGH_RISK_CATEGORIES = {
     "bank_card",
@@ -106,6 +106,15 @@ BENIGN_PATH_KEYWORDS = (
 )
 
 BUSINESS_REQUISITE_CATEGORIES = {"inn_legal", "bik", "bank_account", "email", "phone", "address"}
+BUSINESS_CONTACT_EXPORT_CATEGORIES = {"fio", "address", "phone", "email", "inn_legal", "bik"}
+OPERATIONAL_EXPORT_PATH_KEYWORDS = (
+    "логист",
+    "logistic",
+    "warehouse",
+    "shipment",
+    "delivery",
+    "orders",
+)
 
 
 @dataclass
@@ -246,6 +255,16 @@ def assess_file_risk(
         score += delta
         hits.append(RiskRuleHit("sensitive_export", delta, "Табличный/выгрузочный формат содержит чувствительные идентификаторы."))
 
+    if _looks_like_operational_contact_export(folded_path, categories, table_or_export):
+        delta = -85
+        score += delta
+        hits.append(RiskRuleHit("operational_contact_export", delta, "Операционная/логистическая таблица содержит контактные поля без сильных идентификаторов."))
+
+    if _looks_like_mass_name_only_export(categories, table_or_export):
+        delta = -45
+        score += delta
+        hits.append(RiskRuleHit("mass_name_only_export", delta, "Массовая таблица с именами без контактов и сильных идентификаторов оставлена для review, не для submit."))
+
     matched_suspicious = [keyword for keyword in SUSPICIOUS_PATH_KEYWORDS if keyword in folded_path]
     if matched_suspicious:
         delta = min(25, 8 + 4 * len(matched_suspicious))
@@ -381,7 +400,7 @@ def write_risk_report(
 
     for assessment in assessment_list[:limit]:
         categories = ", ".join(f"{key}:{value}" for key, value in list(assessment.categories.items())[:6])
-        rules = "; ".join(hit.rule for hit in assessment.rule_hits[:5])
+        rules = "; ".join(f"{hit.rule}({hit.score_delta:+.0f})" for hit in assessment.rule_hits[:6])
         lines.append(
             f"| {assessment.score:.1f} | `{assessment.submit_path}` | {assessment.document_type} | {categories} | {rules} |"
         )
@@ -464,6 +483,33 @@ def _business_requisites_only(categories: Dict[str, int]) -> bool:
     if not categories:
         return False
     return set(categories).issubset(BUSINESS_REQUISITE_CATEGORIES)
+
+
+def _looks_like_operational_contact_export(
+    folded_path: str,
+    categories: Dict[str, int],
+    table_or_export: bool,
+) -> bool:
+    if not table_or_export:
+        return False
+    if not any(keyword in folded_path for keyword in OPERATIONAL_EXPORT_PATH_KEYWORDS):
+        return False
+    if _has_any(categories, ("passport_rf", "snils", "inn_person", "birth_date", "bank_card", "cvv", "mrz", "identity_document")):
+        return False
+    return bool(categories) and set(categories).issubset(BUSINESS_CONTACT_EXPORT_CATEGORIES)
+
+
+def _looks_like_mass_name_only_export(
+    categories: Dict[str, int],
+    table_or_export: bool,
+) -> bool:
+    if not table_or_export:
+        return False
+    if categories.get("fio", 0) < 100:
+        return False
+    if _has_any(categories, ("passport_rf", "snils", "inn_person", "birth_date", "bank_card", "cvv", "mrz", "identity_document", "phone", "email")):
+        return False
+    return set(categories).issubset(BUSINESS_CONTACT_EXPORT_CATEGORIES)
 
 
 def _has_high_risk_identifier(categories: Dict[str, int], weak_card_noise: bool) -> bool:
