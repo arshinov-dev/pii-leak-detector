@@ -1,0 +1,4 @@
+# Direct development dependencies.
+
+pytest==8.4.2
+ruff==0.14.8

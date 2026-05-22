@@ -4,7 +4,6 @@ import argparse
 import importlib.util
 import shutil
 import sys
-from pathlib import Path
 
 import settings
 
@@ -76,6 +75,7 @@ def _doctor() -> int:
         "python-pptx": "pptx",
         "Presidio": "presidio_analyzer",
         "spaCy": "spacy",
+        "spaCy model": "xx_ent_wiki_sm",
     }
     failed = []
     for label, module in checks.items():

@@ -7,7 +7,7 @@ CLI-инструмент для поиска высокорисковых уте
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install -e . -c constraints.txt
 pii-leak-detector doctor
 pii-leak-detector scan share --mode fast
 ```
@@ -48,6 +48,8 @@ PII_DETECTOR_SETTINGS=configs/detector_settings.json pii-leak-detector scan shar
 ```
 
 Подробно: [CLI guide](guides/cli.md).
+
+Зависимости и lock-файлы: [dependencies guide](guides/dependencies.md).
 
 ## Режимы
 
@@ -121,6 +123,8 @@ flowchart LR
 ```text
 pii_leak_detector/       устанавливаемая CLI-оболочка
 setup.py                 метаданные установки и скрипты консоли
+requirements.txt         прямые runtime-зависимости с фиксированными версиями
+constraints.txt          lock проверенных транзитивных зависимостей
 main.py                  оркестрация конвейера и устаревшая точка входа
 settings.py              обнаружение и загрузка конфигурации
 detector_settings.json   системные параметры
@@ -134,4 +138,3 @@ pii_ner.py               необязательный слой NER на базе
 risk_classifier.py       оценка, выбор отправки и отчеты
 guides/                  документация для пользователей, разработчиков и по архитектуре
 ```
-

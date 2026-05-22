@@ -7,9 +7,11 @@
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install -e . -c constraints.txt
 pii-leak-detector doctor
 ```
+
+`requirements.txt` фиксирует прямые runtime-зависимости, а `constraints.txt` фиксирует проверенные транзитивные версии. Для обычной установки используйте обе части через `-c constraints.txt`.
 
 Для коротких команд доступен алиас:
 

@@ -5,9 +5,15 @@
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev]" -c constraints.txt
 pii-leak-detector doctor
 ```
+
+Зависимости зафиксированы в трех местах:
+
+- `requirements.txt` - прямые runtime-зависимости;
+- `requirements-dev.txt` - прямые dev-зависимости;
+- `constraints.txt` - проверенный transitive lock для воспроизводимых установок.
 
 Быстрая проверка:
 
@@ -104,4 +110,3 @@ if condition:
 - новый параметр конфига - `guides/settings.md`;
 - изменение pipeline - `guides/pipeline.md`;
 - изменение risk-логики - `guides/risk_classifier.md`.
-

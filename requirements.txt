@@ -1,12 +1,16 @@
-filetype
-PyMuPDF
-numpy
-opencv_python_headless
-Pillow
-pyarrow
-pytesseract
-python_pptx
-presidio-analyzer
-presidio-anonymizer
-langdetect
-spacy
+# Прямые зависимости времени выполнения для PII Leak Detector.
+# Для полной фиксации зависимостей установите с помощью:
+#   pip install -e . -c constraints.txt
+
+
+filetype==1.2.0
+PyMuPDF==1.26.5
+numpy==2.0.2
+opencv-python-headless==4.13.0.92
+Pillow==11.3.0
+pyarrow==21.0.0
+pytesseract==0.3.13
+python-pptx==1.0.2
+presidio-analyzer==2.2.360
+spacy==3.8.11
+xx-ent-wiki-sm @ https://github.com/explosion/spacy-models/releases/download/xx_ent_wiki_sm-3.8.0/xx_ent_wiki_sm-3.8.0-py3-none-any.whl

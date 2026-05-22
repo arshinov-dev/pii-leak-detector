@@ -1,5 +1,8 @@
 include detector_settings.json
 include requirements.txt
+include requirements-dev.txt
+include constraints.txt
+include ruff.toml
 recursive-include guides *.md
 recursive-exclude out *
 recursive-exclude archive *
