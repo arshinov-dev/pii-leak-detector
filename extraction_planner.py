@@ -267,8 +267,25 @@ def build_extraction_plan(scan_result: Dict[str, Any]) -> ExtractionPlan:
             params={"encodings": ["utf-8-sig", "utf-8", "cp1251"]},
         )
 
-    plan.strategy = "manual_review_or_custom_extractor"
-    plan.warnings.append("Для бинарного файла без распознанного семейства нет безопасного дешевого извлечения.")
+    # Последний шанс: пробуем binary_embedded_payload на случай вложений
+    plan.strategy = "binary_unknown_payload_probe"
+    plan.primary_steps.append(
+        ExtractionStep(
+            stage="primary",
+            extractor="binary_embedded_payload_extractor",
+            source="binary",
+            reason=(
+                "Бинарный файл без распознанного семейства — "
+                "проверяем на embedded PDF/Office/изображения без запуска."
+            ),
+            priority=80,
+            optional=True,
+            params={"max_payload_bytes": 5 * 1024 * 1024},
+        )
+    )
+    plan.warnings.append(
+        "Формат не распознан; применяется безопасное сканирование на embedded payload."
+    )
     return plan
 
 

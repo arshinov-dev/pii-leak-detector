@@ -6,6 +6,13 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 from text_blocks import TextBlock
 
+# --- NER-детектор (Presidio + spaCy multilingual) ---
+try:
+    from pii_ner import detect_pii_ner, REGEX_COVERED as _NER_REGEX_COVERED
+    _NER_AVAILABLE = True
+except ImportError:
+    _NER_AVAILABLE = False
+    _NER_REGEX_COVERED = set()
 
 MAX_EXAMPLES_PER_FINDING = 3
 
@@ -231,7 +238,23 @@ def detect_pii_in_block(block: TextBlock) -> List[PiiFinding]:
         if finding:
             detections.append(finding)
 
-    detections.extend(_detect_special_keywords(block))
+        detections.extend(_detect_special_keywords(block))
+
+    # --- ML-детектор (мультиязычный NER через Presidio) ---
+    if _NER_AVAILABLE:
+        existing_cats = {f.category for f in detections}
+        for ner_finding in detect_pii_ner(block):
+            if ner_finding.category not in existing_cats:
+                # Новая категория — добавляем напрямую
+                detections.append(ner_finding)
+            elif ner_finding.category not in _NER_REGEX_COVERED:
+                # Категория уже есть, но не закрыта regex с checksum —
+                # повышаем confidence (например, address, fio)
+                for existing in detections:
+                    if existing.category == ner_finding.category:
+                        existing.confidence = min(0.99, existing.confidence + 0.07)
+                        break
+
     return detections
 
 

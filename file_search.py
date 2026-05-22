@@ -168,14 +168,48 @@ def _decode_text(raw: bytes) -> Tuple[str, str]:
 def _detect_known_binary(path: Path, raw: bytes) -> Optional[FileScanResult]:
     original_extension = _normal_extension(path)
 
-    if raw.startswith(b"PAR1"):
+    if raw.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+        if original_extension in {"doc", "xls", "ppt"}:
+            # Расширение совпадает с OLE-семейством — всё хорошо
+            return _make_result(
+                path,
+                status="success",
+                method="ole_magic_and_extension",
+                extension=original_extension,
+                confidence=0.95,
+                message="Формат Office определен по OLE-сигнатуре и расширению.",
+            )
+
+        # --- НОВОЕ: OLE с неправильным или отсутствующим расширением ---
+        # Пробуем уточнить тип внутри OLE-контейнера через olefile
+        ole_extension = _probe_ole_subtype(path)
+        if ole_extension:
+            return _make_result(
+                path,
+                status="success",
+                method="ole_magic_subtype_probe",
+                extension=ole_extension,
+                confidence=0.88,
+                message=(
+                    f"OLE-контейнер с расширением .{original_extension or '?'} "
+                    f"опознан как .{ole_extension} по внутренней структуре."
+                ),
+            )
+
+        # Не смогли уточнить — отдаём как doc (наиболее вероятный OLE-документ)
         return _make_result(
             path,
-            status="success",
-            method="binary_magic",
-            extension="parquet",
-            confidence=1.0,
-            message="Файл определен по сигнатуре Parquet.",
+            status="warning",
+            method="ole_magic_fallback",
+            extension="doc",           # ← было original_extension ("pdf"), стало "doc"
+            confidence=0.6,
+            mime="application/msword",
+            family="document",
+            is_binary=True,
+            message=(
+                f"OLE-контейнер с расширением .{original_extension or '?'}; "
+                "скорее всего старый Word/Excel/PPT. Обрабатываем как .doc."
+            ),
         )
 
     # Старые форматы Office хранятся в OLE Compound File.
@@ -215,7 +249,34 @@ def _detect_known_binary(path: Path, raw: bytes) -> Optional[FileScanResult]:
 
     return None
 
+def _probe_ole_subtype(path: Path) -> Optional[str]:
+    """
+    Пытается определить точный тип OLE-контейнера по внутренним потокам.
+    Возвращает 'doc', 'xls' или 'ppt', либо None если не удалось.
+    Требует: pip install olefile
+    """
+    try:
+        import olefile
+        if not olefile.isOleFile(str(path)):
+            return None
+        ole = olefile.OleFileIO(str(path))
+        streams = ole.listdir()
+        ole.close()
+        flat = {s for parts in streams for s in parts}
 
+        # Word: поток WordDocument
+        if "WordDocument" in flat:
+            return "doc"
+        # Excel: поток Workbook или Book
+        if "Workbook" in flat or "Book" in flat:
+            return "xls"
+        # PowerPoint: поток PowerPoint Document
+        if "PowerPoint Document" in flat:
+            return "ppt"
+        return None
+    except Exception:
+        return None
+    
 def _detect_with_filetype(path: Path) -> Optional[FileScanResult]:
     try:
         kind = filetype.guess(str(path))
