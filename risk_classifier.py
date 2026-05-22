@@ -2,7 +2,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
-
+from leak_ml_scorer import score_all, LeakMLResult
 from extraction_planner import ExtractionPlan
 from pii_detector import PiiFileResult
 
@@ -145,9 +145,11 @@ def assess_risks(
     plans: Iterable[ExtractionPlan],
     extraction_results: Iterable[Any],
     share_root: str,
+    ml_results: Optional[Iterable[LeakMLResult]] = None,
 ) -> List[RiskAssessment]:
     plans_by_path = {plan.path: plan for plan in plans}
     extraction_by_path = {result.path: result for result in extraction_results}
+    ml_by_path = {r.file_path: r for r in (ml_results or [])}
 
     assessments = [
         assess_file_risk(
@@ -155,6 +157,7 @@ def assess_risks(
             plan=plans_by_path.get(result.file_path),
             extraction_result=extraction_by_path.get(result.file_path),
             share_root=share_root,
+            ml_result=ml_by_path.get(result.file_path),
         )
         for result in pii_results
     ]
@@ -166,17 +169,25 @@ def assess_file_risk(
     plan: Optional[ExtractionPlan],
     extraction_result: Optional[Any],
     share_root: str,
+    ml_result: Optional[LeakMLResult] = None,
 ) -> RiskAssessment:
     categories = pii_result.categories
     hits: List[RiskRuleHit] = []
 
-    score = 0.0
+    # Базовый скор по категориям
+    base_score = 0.0
     for category, count in categories.items():
         weight = CATEGORY_WEIGHTS.get(category, 3)
         delta = min(weight + max(0, count - 1) * min(weight * 0.12, 8), weight * 3.5)
-        score += delta
+        base_score += delta
         if category in HIGH_RISK_CATEGORIES or category in SPECIAL_CATEGORIES:
-            hits.append(RiskRuleHit(f"category:{category}", delta, f"{category}: {count} находок."))
+            hits.append(
+                RiskRuleHit(
+                    f"category:{category}",
+                    delta,
+                    f"{category}: {count} находок.",
+                )
+            )
 
     path = pii_result.file_path
     folded_path = path.casefold()
@@ -196,76 +207,163 @@ def assess_file_risk(
         weak_card_noise=weak_card_noise,
     )
 
+    score = base_score
+
+    # Усиление при наличии сильных идентификаторов
     if _has_high_risk_identifier(categories, weak_card_noise):
         delta = 35
         score += delta
-        hits.append(RiskRuleHit("high_risk_identifier", delta, "Есть государственный идентификатор, карта, CVV или MRZ."))
+        hits.append(
+            RiskRuleHit(
+                "high_risk_identifier",
+                delta,
+                "Есть государственный идентификатор, карта, CVV или MRZ.",
+            )
+        )
 
     if categories.get("identity_document", 0) and (family in {"image", "video"} or ocr_used):
         delta = 95
         score += delta
-        hits.append(RiskRuleHit("identity_document_media", delta, "OCR/медиа содержит признаки удостоверения личности."))
+        hits.append(
+            RiskRuleHit(
+                "identity_document_media",
+                delta,
+                "OCR/медиа содержит признаки удостоверения личности.",
+            )
+        )
 
     if embedded_document_payload:
         delta = 170
         score += delta
-        hits.append(RiskRuleHit("embedded_identity_document_payload", delta, "Бинарный файл содержит embedded image payload, похожий на документ личности."))
+        hits.append(
+            RiskRuleHit(
+                "embedded_identity_document_payload",
+                delta,
+                "Бинарный файл содержит embedded image payload, похожий на документ личности.",
+            )
+        )
 
     if categories.get("bank_card", 0) >= 5:
         delta = 35
         score += delta
-        hits.append(RiskRuleHit("mass_bank_cards", delta, "Много номеров банковских карт."))
+        hits.append(
+            RiskRuleHit(
+                "mass_bank_cards",
+                delta,
+                "Много номеров банковских карт.",
+            )
+        )
 
     if categories.get("snils", 0) >= 5:
         delta = 30
         score += delta
-        hits.append(RiskRuleHit("mass_snils", delta, "Много валидных СНИЛС."))
+        hits.append(
+            RiskRuleHit(
+                "mass_snils",
+                delta,
+                "Много валидных СНИЛС.",
+            )
+        )
 
     if categories.get("fio", 0) and _has_profile_identifier(categories, weak_card_noise):
         delta = 30
         score += delta
-        hits.append(RiskRuleHit("person_profile_combo", delta, "ФИО сочетается с сильными идентификаторами."))
+        hits.append(
+            RiskRuleHit(
+                "person_profile_combo",
+                delta,
+                "ФИО сочетается с сильными идентификаторами.",
+            )
+        )
 
     if categories.get("fio", 0) and _has_any(categories, ("phone", "email", "address")) and category_count >= 3:
         delta = 18
         score += delta
-        hits.append(RiskRuleHit("contact_profile_combo", delta, "ФИО сочетается с контактными или адресными данными."))
+        hits.append(
+            RiskRuleHit(
+                "contact_profile_combo",
+                delta,
+                "ФИО сочетается с контактными или адресными данными.",
+            )
+        )
 
     if _has_any(categories, SPECIAL_CATEGORIES) and strong_profile:
         delta = 20
         score += delta
-        hits.append(RiskRuleHit("special_categories", delta, "Есть специальные категории или биометрические признаки."))
+        hits.append(
+            RiskRuleHit(
+                "special_categories",
+                delta,
+                "Есть специальные категории или биометрические признаки.",
+            )
+        )
 
     if table_or_export and total_count >= 100:
         delta = 28
         score += delta
-        hits.append(RiskRuleHit("mass_table_pii", delta, "Массовая таблица или выгрузка с большим числом ПДн."))
+        hits.append(
+            RiskRuleHit(
+                "mass_table_pii",
+                delta,
+                "Массовая таблица или выгрузка с большим числом ПДн.",
+            )
+        )
 
     if table_or_export and _has_any(categories, HIGH_RISK_CATEGORIES):
         delta = 35
         score += delta
-        hits.append(RiskRuleHit("sensitive_export", delta, "Табличный/выгрузочный формат содержит чувствительные идентификаторы."))
+        hits.append(
+            RiskRuleHit(
+                "sensitive_export",
+                delta,
+                "Табличный/выгрузочный формат содержит чувствительные идентификаторы.",
+            )
+        )
 
     matched_suspicious = [keyword for keyword in SUSPICIOUS_PATH_KEYWORDS if keyword in folded_path]
     if matched_suspicious:
         delta = min(25, 8 + 4 * len(matched_suspicious))
         score += delta
-        hits.append(RiskRuleHit("suspicious_path", delta, f"Подозрительный путь/имя: {', '.join(matched_suspicious[:4])}."))
+        hits.append(
+            RiskRuleHit(
+                "suspicious_path",
+                delta,
+                f"Подозрительный путь/имя: {', '.join(matched_suspicious[:4])}.",
+            )
+        )
 
     if pii_result.has_pii and ("мои бумажки" in folded_path or "employes" in folded_path or "employees" in folded_path):
         delta = 50
         score += delta
-        hits.append(RiskRuleHit("informal_employee_folder", delta, "ПДн лежат в неформальной employee-папке."))
+        hits.append(
+            RiskRuleHit(
+                "informal_employee_folder",
+                delta,
+                "ПДн лежат в неформальной employee-папке.",
+            )
+        )
 
     if plan and plan.metadata.get("high_ocr_context") and pii_result.has_pii:
         delta = 10
         score += delta
-        hits.append(RiskRuleHit("high_ocr_context", delta, "Файл находится в контексте сканов/выгрузок."))
+        hits.append(
+            RiskRuleHit(
+                "high_ocr_context",
+                delta,
+                "Файл находится в контексте сканов/выгрузок.",
+            )
+        )
 
     if _has_unsupported_sensitive_context(extraction_result, plan) and not pii_result.has_pii:
         delta = 15
         score += delta
-        hits.append(RiskRuleHit("unread_suspicious_file", delta, "Файл не прочитан, но путь/формат выглядит подозрительно."))
+        hits.append(
+            RiskRuleHit(
+                "unread_suspicious_file",
+                delta,
+                "Файл не прочитан, но путь/формат выглядит подозрительно.",
+            )
+        )
 
     matched_benign = [keyword for keyword in BENIGN_PATH_KEYWORDS if keyword in folded_path]
     publicish_container = _looks_like_publicish_container(folded_path, family)
@@ -273,67 +371,156 @@ def assess_file_risk(
     if family == "video" and not pii_result.has_pii:
         delta = 130
         score += delta
-        hits.append(RiskRuleHit("video_manual_review_candidate", delta, "Видео требует ручной проверки; OCR может содержать документ."))
+        hits.append(
+            RiskRuleHit(
+                "video_manual_review_candidate",
+                delta,
+                "Видео требует ручной проверки; OCR может содержать документ.",
+            )
+        )
 
     if _misc_public_bucket_without_context(folded_path, family, matched_suspicious):
         delta = -220
         score += delta
-        hits.append(RiskRuleHit("misc_public_bucket_without_context", delta, "Файл из прочего публичного массива без явного leak-контекста."))
+        hits.append(
+            RiskRuleHit(
+                "misc_public_bucket_without_context",
+                delta,
+                "Файл из прочего публичного массива без явного leak-контекста.",
+            )
+        )
 
     if family == "web" and not strong_profile:
         delta = -110
         score += delta
-        hits.append(RiskRuleHit("web_snapshot_without_profile", delta, "HTML-снимок без сильного профиля физлица похож на публичный веб-контент."))
+        hits.append(
+            RiskRuleHit(
+                "web_snapshot_without_profile",
+                delta,
+                "HTML-снимок без сильного профиля физлица похож на публичный веб-контент.",
+            )
+        )
 
     if publicish_container and not matched_suspicious and not strong_profile and not table_or_export:
         delta = -75
         score += delta
-        hits.append(RiskRuleHit("public_container_without_profile", delta, "Публичный/прочий контейнер без сильного профиля физлица."))
+        hits.append(
+            RiskRuleHit(
+                "public_container_without_profile",
+                delta,
+                "Публичный/прочий контейнер без сильного профиля физлица.",
+            )
+        )
 
     if matched_benign and not strong_profile and not table_or_export:
         delta = -70
         score += delta
-        hits.append(RiskRuleHit("benign_document_without_profile", delta, f"Деловой/публичный документ без сильного профиля: {', '.join(matched_benign[:3])}."))
+        hits.append(
+            RiskRuleHit(
+                "benign_document_without_profile",
+                delta,
+                f"Деловой/публичный документ без сильного профиля: {', '.join(matched_benign[:3])}.",
+            )
+        )
 
     if weak_card_noise:
         delta = -95
         score += delta
-        hits.append(RiskRuleHit("weak_single_card_noise", delta, "Одиночные Luhn-совпадения в документе/HTML без карточного контекста считаются шумом."))
+        hits.append(
+            RiskRuleHit(
+                "weak_single_card_noise",
+                delta,
+                "Одиночные Luhn-совпадения в документе/HTML без карточного контекста считаются шумом.",
+            )
+        )
 
     if matched_benign and not _has_any(categories, HIGH_RISK_CATEGORIES) and total_count < 50:
         delta = -25
         score += delta
-        hits.append(RiskRuleHit("likely_business_context", delta, f"Похоже на деловой/публичный документ: {', '.join(matched_benign[:3])}."))
+        hits.append(
+            RiskRuleHit(
+                "likely_business_context",
+                delta,
+                f"Похоже на деловой/публичный документ: {', '.join(matched_benign[:3])}.",
+            )
+        )
 
     if matched_benign and _business_requisites_only(categories):
         delta = -45
         score += delta
-        hits.append(RiskRuleHit("business_requisites_only", delta, "Похоже на легитимные реквизиты организации без профиля физлица."))
+        hits.append(
+            RiskRuleHit(
+                "business_requisites_only",
+                delta,
+                "Похоже на легитимные реквизиты организации без профиля физлица.",
+            )
+        )
 
     if matched_benign and not matched_suspicious and not table_or_export:
         noisy_sensitive = _has_any(categories, ("bank_card", "snils", "inn_legal")) and not categories.get("fio")
         if noisy_sensitive:
             delta = -120
             score += delta
-            hits.append(RiskRuleHit("likely_public_number_noise", delta, "Публичный/нормативный документ с числовыми совпадениями без ФИО."))
-            if not _has_any(categories, ("passport_rf", "snils", "inn_person", "mrz", "cvv")):
-                delta = -90
-                score += delta
-                hits.append(RiskRuleHit("public_numeric_noise_without_person", delta, "Числовые совпадения без госидентификатора или профиля физлица."))
+            hits.append(
+                RiskRuleHit(
+                    "likely_public_number_noise",
+                    delta,
+                    "Публичный/нормативный документ с числовыми совпадениями без ФИО.",
+                )
+            )
+        if not _has_any(categories, ("passport_rf", "snils", "inn_person", "mrz", "cvv")):
+            delta = -90
+            score += delta
+            hits.append(
+                RiskRuleHit(
+                    "public_numeric_noise_without_person",
+                    delta,
+                    "Числовые совпадения без госидентификатора или профиля физлица.",
+                )
+            )
 
     if not pii_result.has_pii and family != "video" and not embedded_document_payload:
         score = min(score, 25)
 
+    # --- Комбинация с ML: отдельный ML-скор и смешивание с приоритетом ML ---
+    if ml_result is not None:
+        ml_prob = ml_result.leak_probability  # 0..1
+        ml_score = ml_prob * 200.0           # приводим к диапазону твоих скорингов
+
+        combined = 0.6 * ml_score + 0.4 * score
+        delta = combined - score
+        score = combined
+
+        top_feats = ml_result.top_features or []
+        top_names = [n for n, _ in top_feats[:3]]
+
+        hits.append(
+            RiskRuleHit(
+                "ml_score",
+                delta,
+                (
+                    f"ML-оценка утечки: {ml_prob:.1%}. "
+                    f"ML-скор: {ml_score:.1f}, комбинированный: {combined:.1f}. "
+                    f"Ключевые признаки: {', '.join(top_names) or 'нет'}."
+                ),
+            )
+        )
+
     score = max(0.0, round(score, 2))
+    submit_path_str = submit_path(path, share_root)
+    level = _risk_level(score)
+    recommendation = _recommendation(score)
+    document_type = _document_type(plan, categories, folded_path, embedded_document_payload)
+
     return RiskAssessment(
         file_path=path,
-        submit_path=submit_path(path, share_root),
+        submit_path=submit_path_str,
         score=score,
-        level=_risk_level(score),
+        level=level,
         categories=categories,
         rule_hits=hits,
-        recommendation=_recommendation(score),
-        document_type=_document_type(plan, categories, folded_path, embedded_document_payload),
+        recommendation=recommendation,
+        document_type=document_type,
     )
 
 

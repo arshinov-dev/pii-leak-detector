@@ -5,6 +5,7 @@ import extraction_runner as er
 import file_search as fs
 import pii_detector as pii
 import risk_classifier as risk
+from leak_ml_scorer import score_all  # ML-слой
 
 
 FAST_SUBMIT_DEFAULT = "out/submit_fast.txt"
@@ -102,25 +103,59 @@ if __name__ == "__main__":
         share_root = fs.resolve_scan_root(args.folder)
         files_stream = fs.traverse_data_folder(str(share_root))
         scan_results = fs.count_and_report_files(files_stream)
+
         needs_risk = bool(args.risk or args.submit or args.risk_report)
+
         if args.plan or args.extract or args.detect_pii or needs_risk:
             plans = list(ep.plan_extractions(scan_results))
+
         if args.plan:
             ep.print_plan_report(plans)
+
         if args.extract or args.detect_pii or needs_risk:
             extraction_plans = plans[: args.extract_limit] if args.extract_limit else plans
             if args.fast:
                 extraction_plans = _fast_candidate_plans(extraction_plans)
                 print(f"\nFAST mode: обработка {len(extraction_plans)} кандидатов вместо {len(plans)} файлов.")
             results = list(er.run_extraction_plans(extraction_plans, include_escalations=args.ocr))
+
         if args.extract:
             er.print_extraction_report(results)
+
         if args.detect_pii or needs_risk:
             pii_results = pii.scan_extraction_results(results)
+
         if args.detect_pii:
             pii.print_pii_report(pii_results)
+
         if needs_risk:
-            assessments = risk.assess_risks(pii_results, extraction_plans, results, str(share_root))
+            # 1. Базовый эвристический риск-скоринг (без ML)
+            assessments = risk.assess_risks(
+                pii_results=pii_results,
+                plans=extraction_plans,
+                extraction_results=results,
+                share_root=str(share_root),
+                ml_results=None,
+            )
+
+            # 2. ML-скоринг по обученной модели
+            ml_results = score_all(
+                pii_results=pii_results,
+                plans=extraction_plans,
+                extraction_results=results,
+                heuristic_assessments=assessments,
+                model_path="out/leak_classifier_supervised.json",
+            )
+
+            # 3. Финальный риск с учётом ML-boost
+            assessments = risk.assess_risks(
+                pii_results=pii_results,
+                plans=extraction_plans,
+                extraction_results=results,
+                share_root=str(share_root),
+                ml_results=ml_results,
+            )
+
         if args.risk:
             risk.print_risk_report(assessments, threshold=args.risk_threshold)
         if args.submit:
