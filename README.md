@@ -24,6 +24,19 @@ pld scan share --mode normal
 python main.py share --mode fast
 ```
 
+Docker (еще один способ запуска):
+
+```bash
+docker build -t pii-leak-detector .
+docker run --rm -v /path/to/folder:/app/share pii-leak-detector scan share --mode fast
+```
+
+Где `/path/to/folder` — путь к папке для сканирования на хост-машине. Результаты сохранятся в `out/` контейнера. Для сохранения резултатов на хост-машину:
+
+```bash
+docker run --rm -v /path/to/folder:/app/share -v $(pwd)/out:/app/out pii-leak-detector scan share --mode fast
+```
+
 ## Команды CLI
 
 ```bash
