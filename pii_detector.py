@@ -6,11 +6,12 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 from text_blocks import TextBlock
 
-# --- NER-детектор (Presidio + spaCy multilingual) ---
+# --- интеграция с ML-детектором (spaCy + Presidio) ---
 try:
-    from pii_ner import detect_pii_ner, REGEX_COVERED as _NER_REGEX_COVERED
+    from pii_ner import detect_pii_ner, ner_regex_covered_categories as _ner_regex_covered_categories
     _NER_AVAILABLE = True
-except ImportError:
+    _NER_REGEX_COVERED = _ner_regex_covered_categories()
+except Exception:
     _NER_AVAILABLE = False
     _NER_REGEX_COVERED = set()
 
@@ -238,18 +239,20 @@ def detect_pii_in_block(block: TextBlock) -> List[PiiFinding]:
         if finding:
             detections.append(finding)
 
-        detections.extend(_detect_special_keywords(block))
+    detections.extend(_detect_special_keywords(block))
 
-    # --- ML-детектор (мультиязычный NER через Presidio) ---
-    if _NER_AVAILABLE:
+    # --- ML-слой: spaCy + Presidio, только если доступен и есть смысл ---
+    if _NER_AVAILABLE and _should_run_ner(block, detections):
         existing_cats = {f.category for f in detections}
         for ner_finding in detect_pii_ner(block):
+            # Новая категория — добавляем
             if ner_finding.category not in existing_cats:
-                # Новая категория — добавляем напрямую
                 detections.append(ner_finding)
-            elif ner_finding.category not in _NER_REGEX_COVERED:
-                # Категория уже есть, но не закрыта regex с checksum —
-                # повышаем confidence (например, address, fio)
+                continue
+
+            # Категория уже есть, но не закрыта checksum/regex-детектором:
+            # используем NER как усилитель confidence, но не как замену.
+            if ner_finding.category not in _NER_REGEX_COVERED:
                 for existing in detections:
                     if existing.category == ner_finding.category:
                         existing.confidence = min(0.99, existing.confidence + 0.07)
@@ -493,6 +496,63 @@ def _detect_special_keywords(block: TextBlock) -> List[PiiFinding]:
             )
     return [finding for finding in findings if finding]
 
+SUSPICIOUS_TEXT_HINTS = (
+    "личные данные",
+    "персональные данные",
+    "конфиденциально",
+    "для служебного пользования",
+    "passport",
+    "паспорт",
+    "application form",
+    "анкета",
+    "заявление",
+    "согласие",
+)
+
+def _should_run_ner(block: TextBlock, detections: List[PiiFinding]) -> bool:
+    """
+    Решает, имеет ли смысл вызывать NER для этого блока.
+    Логика: фокусируемся на потенциально интересных текстах, чтобы не тратить время
+    на HTML/мусор, но не пропускать важное.
+    """
+    text = (block.text or "").strip()
+    if len(text) < 80:
+        return False
+
+    # 1) Уже есть сильные регэксп-обнаружения
+    if any(
+        f.category in {
+            "passport_rf",
+            "snils",
+            "inn_person",
+            "inn_legal",
+            "bank_card",
+            "mrz",
+            "birth_date",
+            "email",
+            "phone",
+            "address",
+        }
+        for f in detections
+    ):
+        return True
+
+    # 2) Содержит явные подсказки про ПДн / документы
+    lowered = text.casefold()
+    if any(hint in lowered for hint in SUSPICIOUS_TEXT_HINTS):
+        return True
+
+    # 3) Источник текста – «нормальный» документ/таблица/текст, а не html boilerplate
+    if block.extraction_method in {
+        "pdf_text_extractor",
+        "docx_text_extractor",
+        "plain_text_extractor",
+        "csv_extractor",
+        "spreadsheet_extractor",
+    }:
+        return True
+
+    return False
 
 def _keyword_present(text: str, keyword: str) -> bool:
     pattern = r"(?<![A-Za-zА-Яа-яЁё])" + re.escape(keyword) + r"(?![A-Za-zА-Яа-яЁё])"
