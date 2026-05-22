@@ -209,7 +209,10 @@ def _should_run_ocr_step(plan: ExtractionPlan, step: ExtractionStep, result: Ext
     high_ocr_context = bool(plan.metadata.get("high_ocr_context"))
 
     if step.extractor == "image_ocr_extractor":
-        return plan.extension in {"tif", "tiff"} or suspicious_name or "/архив сканы/" in folded_path
+        archive_ctx = "архив сканы" in folded_path
+        if archive_ctx and plan.extension in {"tif", "tiff", "jpg", "jpeg", "png", "gif", "webp"}:
+            return True
+        return plan.extension in {"tif", "tiff"} or suspicious_name or archive_ctx
 
     if step.extractor == "pdf_page_ocr_extractor":
         has_empty_page = any(

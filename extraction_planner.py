@@ -3,69 +3,26 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional
 
-
-LOW_CONFIDENCE_THRESHOLD = 0.5
-EMPTY_FILE_BYTES = 0
-TINY_FILE_BYTES = 128
-SMALL_IMAGE_BYTES = 2 * 1024
-
-PDF_OCR_MAX_PAGES = 12
-DOCX_OCR_MAX_IMAGES = 20
-PRESENTATION_OCR_MAX_IMAGES = 30
-VIDEO_MAX_FRAMES = 30
+import settings as cfg
 
 
-HIGH_OCR_DIR_KEYWORDS = (
-    "архив сканы",
-    "выгрузки",
-    "scan",
-    "scans",
-    "dump",
-    "backup",
-)
+LOW_CONFIDENCE_THRESHOLD = float(cfg.get("planner.low_confidence_threshold", 0.5))
+EMPTY_FILE_BYTES = int(cfg.get("planner.empty_file_bytes", 0))
+TINY_FILE_BYTES = int(cfg.get("planner.tiny_file_bytes", 128))
+SMALL_IMAGE_BYTES = int(cfg.get("planner.small_image_bytes", 2 * 1024))
 
-SUSPICIOUS_NAME_KEYWORDS = (
-    "паспорт",
-    "passport",
-    "скан",
-    "scan",
-    "копия",
-    "copy",
-    "удостовер",
-    "driver",
-    "license",
-    "карта",
-    "card",
-    "анкета",
-    "заявление",
-    "согласие",
-    "список",
-    "выгруз",
-    "dump",
-    "backup",
-    "скрин",
-    "screenshot",
-    "photo",
-    "фото",
-)
+PDF_OCR_MAX_PAGES = int(cfg.get("planner.pdf_ocr_max_pages", 12))
+DOCX_OCR_MAX_IMAGES = int(cfg.get("planner.docx_ocr_max_images", 20))
+PRESENTATION_OCR_MAX_IMAGES = int(cfg.get("planner.presentation_ocr_max_images", 30))
+VIDEO_MAX_FRAMES = int(cfg.get("planner.video_max_frames", 30))
+IMAGE_PREFILTER_MIN_WIDTH_PX = int(cfg.get("planner.image_prefilter_min_width_px", 300))
+IMAGE_PREFILTER_MIN_HEIGHT_PX = int(cfg.get("planner.image_prefilter_min_height_px", 200))
+EMBEDDED_IMAGE_MIN_WIDTH_PX = int(cfg.get("planner.embedded_image_min_width_px", 400))
+EMBEDDED_IMAGE_MIN_HEIGHT_PX = int(cfg.get("planner.embedded_image_min_height_px", 250))
 
-BUSINESS_CONTEXT_KEYWORDS = (
-    "договор",
-    "счет",
-    "счёт",
-    "акт",
-    "наклад",
-    "приказ",
-    "распоряж",
-    "agreement",
-    "contract",
-    "invoice",
-    "policy",
-    "privacy",
-    "terms",
-    "regulation",
-    "rules",
-)
+HIGH_OCR_DIR_KEYWORDS = cfg.tuple_setting("planner.high_ocr_dir_keywords")
+SUSPICIOUS_NAME_KEYWORDS = cfg.tuple_setting("planner.suspicious_name_keywords")
+BUSINESS_CONTEXT_KEYWORDS = cfg.tuple_setting("planner.business_context_keywords")
 
 
 @dataclass
@@ -414,7 +371,11 @@ def _plan_document(plan: ExtractionPlan) -> ExtractionPlan:
                 reason="OCR нужен только для крупных embedded images или если прямой текст пустой.",
                 priority=_ocr_priority(plan),
                 optional=True,
-                params={"max_images": DOCX_OCR_MAX_IMAGES, "min_width_px": 400, "min_height_px": 250},
+                params={
+                    "max_images": DOCX_OCR_MAX_IMAGES,
+                    "min_width_px": EMBEDDED_IMAGE_MIN_WIDTH_PX,
+                    "min_height_px": EMBEDDED_IMAGE_MIN_HEIGHT_PX,
+                },
             )
         )
         return plan
@@ -476,7 +437,11 @@ def _plan_presentation(plan: ExtractionPlan) -> ExtractionPlan:
             reason="Изображения на слайдах OCR-ятся только при крупном размере или пустом текстовом слое.",
             priority=_ocr_priority(plan),
             optional=True,
-            params={"max_images": PRESENTATION_OCR_MAX_IMAGES, "min_width_px": 400, "min_height_px": 250},
+            params={
+                "max_images": PRESENTATION_OCR_MAX_IMAGES,
+                "min_width_px": EMBEDDED_IMAGE_MIN_WIDTH_PX,
+                "min_height_px": EMBEDDED_IMAGE_MIN_HEIGHT_PX,
+            },
         )
     )
     return plan
@@ -495,8 +460,8 @@ def _plan_image(plan: ExtractionPlan) -> ExtractionPlan:
             reason="Перед OCR нужно отсеять логотипы, иконки, пустые изображения и шум.",
             priority=15,
             params={
-                "min_width_px": 300,
-                "min_height_px": 200,
+                "min_width_px": IMAGE_PREFILTER_MIN_WIDTH_PX,
+                "min_height_px": IMAGE_PREFILTER_MIN_HEIGHT_PX,
                 "check_document_like_layout": True,
                 "check_text_regions": True,
             },

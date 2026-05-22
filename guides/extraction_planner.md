@@ -3,7 +3,8 @@
 ## Назначение
 
 `extraction_planner.py` принимает структурированные результаты `file_search.py` и решает,
-каким способом дальше извлекать текст или таблицы из каждого файла.
+каким способом дальше извлекать текст или таблицы из каждого файла. Лимиты и keyword-списки
+планировщика берутся из `detector_settings.json -> planner`.
 
 Планировщик не читает содержимое файла, не запускает OCR, не ищет ПДн и не оценивает риск
 утечки. Его задача - построить маршрут обработки по уже известным метаданным:
@@ -94,10 +95,26 @@ OCR в плане почти всегда находится в `escalation_step
 OCR-шагом. Строка `OCR сразу` показывает планы, где OCR был бы обязательным
 первым действием; в нормальном режиме она должна быть близка к нулю.
 
+## Настройки
+
+| Параметр | Что меняет |
+|---|---|
+| `planner.low_confidence_threshold` | Warning при низкой уверенности file type. |
+| `planner.tiny_file_bytes` | Граница очень маленького файла. |
+| `planner.small_image_bytes` | Когда маленькую картинку можно пропустить без OCR. |
+| `planner.pdf_ocr_max_pages` | Максимум PDF-страниц для OCR escalation. |
+| `planner.docx_ocr_max_images` | Максимум embedded images в DOCX. |
+| `planner.presentation_ocr_max_images` | Максимум embedded images в презентации. |
+| `planner.video_max_frames` | Максимум кадров видео для OCR. |
+| `planner.suspicious_name_keywords` | Слова, делающие имя файла подозрительным. |
+| `planner.business_context_keywords` | Слова, похожие на обычный бизнес-документ. |
+
+Подробно: [settings guide](settings.md).
+
 ## CLI
 
 ```bash
-python main.py share --plan
+pii-leak-detector scan share --plan
 ```
 
 Команда сначала выполняет обычную инвентаризацию, затем печатает сводку планов извлечения.

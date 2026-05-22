@@ -5,6 +5,7 @@ import json
 import re
 import tempfile
 import zipfile
+from collections import Counter
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
@@ -18,6 +19,8 @@ MAX_TEXT_BLOCK_CHARS = 50_000
 CSV_ROWS_PER_BLOCK = 250
 JSON_MAX_PARSE_BYTES = 50 * 1024 * 1024
 SPREADSHEET_ROWS_PER_BLOCK = 250
+PARQUET_MAX_ROWS = 2_000
+PDF_TEXT_MAX_PAGES = 8
 BINARY_PAYLOAD_MIN_OFFSET = 4096
 BINARY_PAYLOAD_MIN_BYTES = 32 * 1024
 BINARY_PAYLOAD_MAX_BYTES = 20 * 1024 * 1024
@@ -46,6 +49,48 @@ DOCUMENT_LIKE_OCR_KEYWORDS = (
     "passport",
     "удостоверение",
     "паспорт",
+)
+
+TABLE_PERSON_COLUMN_KEYWORDS = (
+    "fio",
+    "full_name",
+    "customer_name",
+    "client_name",
+    "subscriber_name",
+    "employee_name",
+    "person",
+    "person_name",
+    "фамилия",
+    "имя",
+    "отчество",
+    "фио",
+)
+TABLE_ADDRESS_COLUMN_KEYWORDS = (
+    "address",
+    "destination_address",
+    "registration_address",
+    "home_address",
+    "адрес",
+    "улица",
+)
+TABLE_CONTACT_COLUMN_KEYWORDS = ("phone", "email", "tel", "mobile", "почта", "телефон")
+TABLE_ID_COLUMN_KEYWORDS = (
+    "passport",
+    "snils",
+    "inn",
+    "birth",
+    "dob",
+    "паспорт",
+    "снилс",
+    "инн",
+    "рожд",
+)
+TABLE_PHYSICAL_PERSON_MARKERS = (
+    "физическое лицо",
+    "physical person",
+    "individual",
+    "person_type",
+    "customer_type",
 )
 
 DOCX_TEXT_PART_RE = re.compile(
@@ -155,7 +200,9 @@ def extract_json_text(file_path: str, params: Optional[Dict[str, Any]] = None) -
 
 
 def extract_parquet_text(file_path: str, params: Optional[Dict[str, Any]] = None) -> List[TextBlock]:
+    params = params or {}
     try:
+        import pyarrow as pa  # type: ignore
         import pyarrow.parquet as pq  # type: ignore
     except Exception as exc:
         return [
@@ -167,20 +214,51 @@ def extract_parquet_text(file_path: str, params: Optional[Dict[str, Any]] = None
             )
         ]
 
-    table = pq.read_table(file_path)
+    max_rows = int(params.get("max_rows") or PARQUET_MAX_ROWS)
+    parquet_file = pq.ParquetFile(file_path)
+    batches = []
+    rows_read = 0
+    for batch in parquet_file.iter_batches(batch_size=max_rows):
+        batches.append(batch)
+        rows_read += batch.num_rows
+        if rows_read >= max_rows:
+            break
+
+    if not batches:
+        return [
+            _diagnostic_block(
+                file_path=file_path,
+                source_type="parquet",
+                extraction_method="parquet_extractor",
+                warning="Parquet не содержит строк для извлечения.",
+            )
+        ]
+
+    table = pa.Table.from_batches(batches)
+    if table.num_rows > max_rows:
+        table = table.slice(0, max_rows)
     columns = table.column_names
     rows = (
         [f"{column}: {value}" for column, value in zip(columns, record)]
         for record in zip(*(table[column].to_pylist() for column in columns))
     )
-    return _row_blocks(
+    blocks = _row_blocks(
         file_path=file_path,
         source_type="table",
         extraction_method="parquet_extractor",
         rows=rows,
-        rows_per_block=int((params or {}).get("rows_per_block") or CSV_ROWS_PER_BLOCK),
-        metadata={"columns": columns},
+        rows_per_block=int(params.get("rows_per_block") or CSV_ROWS_PER_BLOCK),
+        metadata={
+            "columns": columns,
+            "max_rows": max_rows,
+            "rows_read": min(rows_read, max_rows),
+            "truncated": parquet_file.metadata.num_rows > max_rows,
+        },
     )
+    if parquet_file.metadata.num_rows > max_rows:
+        for block in blocks:
+            block.warnings.append(f"Parquet ограничен первыми {max_rows} строками для быстрого triage.")
+    return blocks
 
 
 def extract_spreadsheet_text(file_path: str, params: Optional[Dict[str, Any]] = None) -> List[TextBlock]:
@@ -199,6 +277,7 @@ def extract_spreadsheet_text(file_path: str, params: Optional[Dict[str, Any]] = 
 
 
 def extract_pdf_text(file_path: str, params: Optional[Dict[str, Any]] = None) -> List[TextBlock]:
+    params = params or {}
     try:
         import fitz  # type: ignore
     except Exception as exc:
@@ -219,12 +298,17 @@ def extract_pdf_text(file_path: str, params: Optional[Dict[str, Any]] = None) ->
     fitz.TOOLS.mupdf_display_warnings(False)
     try:
         doc = fitz.open(file_path)
-        for page_index in range(len(doc)):
+        page_count = len(doc)
+        max_pages = int(params.get("max_pages") or PDF_TEXT_MAX_PAGES)
+        pages_to_read = min(page_count, max_pages) if max_pages > 0 else page_count
+        for page_index in range(pages_to_read):
             page = doc.load_page(page_index)
             text = normalize_text(page.get_text("text"))
             warnings: List[str] = []
             if not text:
                 warnings.append("Страница не содержит цифрового текста; может потребоваться OCR.")
+            if page_index == pages_to_read - 1 and page_count > pages_to_read:
+                warnings.append(f"PDF text extraction ограничен первыми {pages_to_read} страницами из {page_count}.")
             blocks.append(
                 TextBlock(
                     file_path=file_path,
@@ -236,7 +320,9 @@ def extract_pdf_text(file_path: str, params: Optional[Dict[str, Any]] = None) ->
                     warnings=warnings,
                     metadata={
                         "page_number": page_index + 1,
-                        "page_count": len(doc),
+                        "page_count": page_count,
+                        "pages_read": pages_to_read,
+                        "truncated": page_count > pages_to_read,
                         "char_count": len(text),
                     },
                 )
@@ -708,23 +794,69 @@ def _row_blocks(
 ) -> List[TextBlock]:
     blocks: List[TextBlock] = []
     current_lines: List[str] = []
+    current_hints: Counter[str] = Counter()
+    current_physical_person_mentions = 0
     row_start = 1
     row_index = 0
+    base_metadata = dict(metadata or {})
+    columns = [
+        normalize_text(str(column))
+        for column in base_metadata.get("columns", [])
+        if str(column).strip()
+    ]
+    header_seen = bool(columns)
 
     for row_index, row in enumerate(rows, 1):
-        line = " | ".join(normalize_text(str(cell)) for cell in row if str(cell).strip())
+        cells = [normalize_text(str(cell)) for cell in row]
+        if not any(cells):
+            continue
+
+        if not header_seen and _looks_like_header_row(cells):
+            columns = [cell for cell in cells if cell]
+            base_metadata["columns"] = columns
+            header_seen = True
+            line = "columns: " + " | ".join(columns)
+        else:
+            line = _format_table_row(cells, columns)
+
         if line:
             current_lines.append(line)
+            current_hints.update(_table_semantic_hints(columns, cells, line))
+            current_physical_person_mentions += _count_physical_person_mentions(line)
         if len(current_lines) >= rows_per_block:
             blocks.append(
-                _row_block(file_path, source_type, extraction_method, blocks, current_lines, row_start, row_index, metadata)
+                _row_block(
+                    file_path,
+                    source_type,
+                    extraction_method,
+                    blocks,
+                    current_lines,
+                    row_start,
+                    row_index,
+                    base_metadata,
+                    current_hints,
+                    current_physical_person_mentions,
+                )
             )
             current_lines = []
+            current_hints = Counter()
+            current_physical_person_mentions = 0
             row_start = row_index + 1
 
     if current_lines:
         blocks.append(
-            _row_block(file_path, source_type, extraction_method, blocks, current_lines, row_start, row_index, metadata)
+            _row_block(
+                file_path,
+                source_type,
+                extraction_method,
+                blocks,
+                current_lines,
+                row_start,
+                row_index,
+                base_metadata,
+                current_hints,
+                current_physical_person_mentions,
+            )
         )
 
     if blocks:
@@ -738,7 +870,7 @@ def _row_blocks(
             extraction_method=extraction_method,
             text="",
             warnings=["Табличный источник не содержит извлекаемого текста."],
-            metadata=metadata or {},
+            metadata=base_metadata,
         )
     ]
 
@@ -752,9 +884,15 @@ def _row_block(
     row_start: int,
     row_end: int,
     metadata: Optional[Dict[str, Any]],
+    semantic_hints: Optional[Counter[str]] = None,
+    physical_person_mentions: int = 0,
 ) -> TextBlock:
     block_metadata = dict(metadata or {})
     block_metadata.update({"row_start": row_start, "row_end": row_end})
+    if semantic_hints:
+        block_metadata["table_semantic_hints"] = dict(semantic_hints)
+    if physical_person_mentions:
+        block_metadata["physical_person_mentions"] = physical_person_mentions
     return TextBlock(
         file_path=file_path,
         source_type=source_type,
@@ -764,6 +902,75 @@ def _row_block(
         text=normalize_text("\n".join(lines)),
         metadata=block_metadata,
     )
+
+
+def _looks_like_header_row(cells: List[str]) -> bool:
+    non_empty = [cell for cell in cells if cell]
+    if len(non_empty) < 2:
+        return False
+    short_text_cells = [
+        cell
+        for cell in non_empty
+        if len(cell) <= 48 and re.search(r"[A-Za-zА-Яа-яЁё_]", cell) and not re.search(r"\d{4,}", cell)
+    ]
+    keyword_cells = [
+        cell
+        for cell in non_empty
+        if _column_has_keyword(cell, TABLE_PERSON_COLUMN_KEYWORDS + TABLE_ADDRESS_COLUMN_KEYWORDS + TABLE_CONTACT_COLUMN_KEYWORDS + TABLE_ID_COLUMN_KEYWORDS + TABLE_PHYSICAL_PERSON_MARKERS)
+    ]
+    return len(keyword_cells) >= 1 or len(short_text_cells) >= max(2, len(non_empty) // 2)
+
+
+def _format_table_row(cells: List[str], columns: List[str]) -> str:
+    parts: List[str] = []
+    for index, cell in enumerate(cells):
+        if not cell:
+            continue
+        column = columns[index] if index < len(columns) else ""
+        if column:
+            parts.append(f"{column}: {cell}")
+        else:
+            parts.append(cell)
+    return " | ".join(parts)
+
+
+def _table_semantic_hints(columns: List[str], cells: List[str], line: str) -> List[str]:
+    hints: List[str] = []
+    if any(_column_has_keyword(column, TABLE_PERSON_COLUMN_KEYWORDS) for column in columns):
+        hints.append("person_name_column")
+    if any(_column_has_keyword(column, TABLE_ADDRESS_COLUMN_KEYWORDS) for column in columns):
+        hints.append("address_column")
+    if any(_column_has_keyword(column, TABLE_CONTACT_COLUMN_KEYWORDS) for column in columns):
+        hints.append("contact_column")
+    if any(_column_has_keyword(column, TABLE_ID_COLUMN_KEYWORDS) for column in columns):
+        hints.append("identifier_column")
+    if any(_column_has_keyword(column, TABLE_PHYSICAL_PERSON_MARKERS) for column in columns):
+        hints.append("person_type_column")
+    if _count_physical_person_mentions(line):
+        hints.append("physical_person_rows")
+    if any(_looks_like_sensitive_column_value(column, cell) for column, cell in zip(columns, cells)):
+        hints.append("sensitive_column_value")
+    return hints
+
+
+def _column_has_keyword(column: str, keywords: Iterable[str]) -> bool:
+    folded = (column or "").casefold()
+    return any(keyword.casefold() in folded for keyword in keywords)
+
+
+def _count_physical_person_mentions(text: str) -> int:
+    folded = text.casefold()
+    return sum(folded.count(marker.casefold()) for marker in TABLE_PHYSICAL_PERSON_MARKERS[:3])
+
+
+def _looks_like_sensitive_column_value(column: str, cell: str) -> bool:
+    if not cell:
+        return False
+    if _column_has_keyword(column, TABLE_ID_COLUMN_KEYWORDS):
+        return bool(re.search(r"\d", cell))
+    if _column_has_keyword(column, TABLE_ADDRESS_COLUMN_KEYWORDS):
+        return bool(re.search(r"\d", cell))
+    return False
 
 
 def _json_rows(data: Any, prefix: str = "$") -> Iterator[List[str]]:

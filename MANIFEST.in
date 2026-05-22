@@ -1,0 +1,7 @@
+include detector_settings.json
+include requirements.txt
+recursive-include guides *.md
+recursive-exclude out *
+recursive-exclude archive *
+recursive-exclude archive2 *
+recursive-exclude share *

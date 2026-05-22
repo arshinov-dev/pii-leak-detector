@@ -8,6 +8,14 @@ from text_blocks import TextBlock
 
 
 MAX_EXAMPLES_PER_FINDING = 3
+NER_TEXT_LIMIT = 25_000
+NER_BLOCK_LIMIT_PER_FILE = 3
+NER_SKIP_SOURCE_TYPES = {"table", "json", "workbook"}
+
+_NER_STATUS: Dict[str, str] = {
+    "status": "not_used",
+    "message": "",
+}
 
 
 EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]{1,64}@[\w.-]+\.[A-Za-zА-Яа-яЁё]{2,}(?![\w.-])")
@@ -199,7 +207,7 @@ class PiiFileResult:
         }
 
 
-def detect_pii_in_block(block: TextBlock) -> List[PiiFinding]:
+def detect_pii_in_block(block: TextBlock, use_ner: bool = False) -> List[PiiFinding]:
     """
     Detect PII evidence in a single TextBlock.
     """
@@ -232,10 +240,12 @@ def detect_pii_in_block(block: TextBlock) -> List[PiiFinding]:
             detections.append(finding)
 
     detections.extend(_detect_special_keywords(block))
+    if use_ner:
+        detections.extend(_detect_ner_findings(block, detections))
     return detections
 
 
-def scan_text_blocks(blocks: Iterable[TextBlock]) -> List[PiiFileResult]:
+def scan_text_blocks(blocks: Iterable[TextBlock], use_ner: bool = False) -> List[PiiFileResult]:
     """
     Scan blocks and return one result per file.
     """
@@ -245,26 +255,42 @@ def scan_text_blocks(blocks: Iterable[TextBlock]) -> List[PiiFileResult]:
         result = grouped.setdefault(block.file_path, PiiFileResult(file_path=block.file_path))
         if block.warnings:
             result.warnings.extend(block.warnings)
-        result.findings.extend(detect_pii_in_block(block))
+        result.findings.extend(detect_pii_in_block(block, use_ner=use_ner))
 
     return list(grouped.values())
 
 
-def scan_extraction_results(extraction_results: Iterable[Any]) -> List[PiiFileResult]:
+def scan_extraction_results(
+    extraction_results: Iterable[Any],
+    use_ner: bool = False,
+    ner_file_limit: int = 40,
+) -> List[PiiFileResult]:
     """
     Scan ExtractionRunResult-like objects without importing the runner module.
     """
 
     results: List[PiiFileResult] = []
+    ner_files_used = 0
     for extraction_result in extraction_results:
         file_result = PiiFileResult(file_path=extraction_result.path)
         file_result.warnings.extend(getattr(extraction_result, "warnings", []))
+        run_ner_for_file = bool(use_ner and ner_files_used < max(0, ner_file_limit))
+        ner_blocks_used = 0
         for block in getattr(extraction_result, "blocks", []):
             if block.warnings:
                 file_result.warnings.extend(block.warnings)
-            file_result.findings.extend(detect_pii_in_block(block))
+            use_ner_for_block = run_ner_for_file and ner_blocks_used < NER_BLOCK_LIMIT_PER_FILE
+            file_result.findings.extend(detect_pii_in_block(block, use_ner=use_ner_for_block))
+            if use_ner_for_block and block.source_type not in NER_SKIP_SOURCE_TYPES:
+                ner_blocks_used += 1
+        if run_ner_for_file and ner_blocks_used:
+            ner_files_used += 1
         results.append(file_result)
     return results
+
+
+def ner_runtime_status() -> Dict[str, str]:
+    return dict(_NER_STATUS)
 
 
 def summarize_pii_results(results: Iterable[PiiFileResult]) -> Dict[str, Any]:
@@ -469,6 +495,58 @@ def _detect_special_keywords(block: TextBlock) -> List[PiiFinding]:
                 )
             )
     return [finding for finding in findings if finding]
+
+
+def _detect_ner_findings(block: TextBlock, existing_findings: Sequence[PiiFinding]) -> List[PiiFinding]:
+    text = block.text or ""
+    if len(text.strip()) < 10:
+        return []
+    if block.source_type in NER_SKIP_SOURCE_TYPES:
+        return []
+    if len(text) > NER_TEXT_LIMIT:
+        text = text[:NER_TEXT_LIMIT]
+        block = TextBlock(
+            file_path=block.file_path,
+            source_type=block.source_type,
+            block_index=block.block_index,
+            extraction_method=block.extraction_method,
+            text=text,
+            page_or_sheet=block.page_or_sheet,
+            warnings=list(block.warnings),
+            metadata=dict(block.metadata),
+        )
+
+    try:
+        import pii_ner  # type: ignore
+    except Exception as exc:
+        _NER_STATUS["status"] = "unavailable"
+        _NER_STATUS["message"] = f"pii_ner import failed: {type(exc).__name__}: {exc}"
+        return []
+
+    _NER_STATUS["status"] = "loaded"
+    _NER_STATUS["message"] = "pii_ner module imported"
+    try:
+        findings = pii_ner.detect_pii_ner(block)
+    except Exception as exc:
+        _NER_STATUS["status"] = "failed"
+        _NER_STATUS["message"] = f"pii_ner failed: {type(exc).__name__}: {exc}"
+        return []
+
+    module_status = getattr(pii_ner, "runtime_status", lambda: {})()
+    if module_status:
+        _NER_STATUS.update({key: str(value) for key, value in module_status.items()})
+
+    if not findings:
+        return []
+
+    existing_categories = {finding.category for finding in existing_findings}
+    regex_covered = getattr(pii_ner, "REGEX_COVERED", set())
+    filtered = []
+    for finding in findings:
+        if finding.category in regex_covered and finding.category in existing_categories:
+            continue
+        filtered.append(finding)
+    return filtered
 
 
 def _keyword_present(text: str, keyword: str) -> bool:

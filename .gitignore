@@ -40,6 +40,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 share
+out/
+archive/
+archive2/
+detector_settings.local.json
 
 # C extensions
 *.so
@@ -239,3 +243,4 @@ $RECYCLE.BIN/
 out/
 .obsidian
 archive/
+archive2/

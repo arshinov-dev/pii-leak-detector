@@ -2,11 +2,9 @@
 
 ## Назначение
 
-`pii_detector.py` принимает `TextBlock`-и после базового извлечения текста и
-возвращает факты обнаружения ПДн.
+`pii_detector.py` принимает `TextBlock`-и после базового извлечения текста и возвращает факты обнаружения ПДн.
 
-Этот модуль не решает, является ли файл утечкой. Он только отвечает на вопрос:
-какие категории ПДн найдены, сколько их, где они найдены и с какой уверенностью.
+Этот модуль не решает, является ли файл утечкой. Он только отвечает на вопрос: **какие категории ПДн найдены, сколько их, где они найдены и с какой уверенностью.**
 
 ## Контракты
 
@@ -83,17 +81,17 @@
 Запуск поверх базового извлечения:
 
 ```bash
-python main.py share --detect-pii
+pii-leak-detector scan share --detect-pii
 ```
 
 Smoke-прогон:
 
 ```bash
-python main.py share --detect-pii --extract-limit 180
+pii-leak-detector scan share --detect-pii --extract-limit 180
 ```
 
 Можно вывести все три сводки:
 
 ```bash
-python main.py share --plan --extract --detect-pii --extract-limit 3500
+pii-leak-detector scan share --plan --extract --detect-pii --extract-limit 3500
 ```
